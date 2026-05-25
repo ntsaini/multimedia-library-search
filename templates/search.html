@@ -1,0 +1,549 @@
+{% extends "base.html" %}
+{% block title %}Search — Library Search{% endblock %}
+{% block content %}
+<style>
+  /* ── Search forms ── */
+  .search-row { display: flex; gap: 2rem; flex-wrap: wrap; }
+  .search-col { flex: 1; min-width: 240px; }
+  .search-col + .search-col { padding-left: 2rem; border-left: 1px solid #e9ecef; }
+  .search-col h3 { margin: 0 0 0.5rem; }
+  .search-col p.muted { margin: 0 0 0.65rem; }
+  #name-input { width: 100%; }
+  .file-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  #photo-input { flex: 1; min-width: 0; font-size: 0.85rem; }
+
+  /* ── Result rows (one per video) ── */
+  .result-list { display: flex; flex-direction: column; gap: 0.6rem; }
+  .result-row { display: flex; flex-direction: column; gap: 0.55rem; padding: 0.75rem; }
+
+  /* Three frame previews side by side */
+  .frame-strip {
+    display: flex;
+    gap: 4px;
+    border-radius: 5px;
+    overflow: hidden;
+    background: #dee2e6;   /* shows while frames are loading */
+    min-height: 60px;
+  }
+  .frame-strip img {
+    flex: 1;
+    min-width: 0;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+    display: block;
+  }
+
+  .result-filename {
+    font-weight: 600;
+    font-size: 0.88rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .result-meta { font-size: 0.78rem; color: #6c757d; }
+
+  /* Timestamp chips */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 0.28rem; margin-top: 0.1rem; }
+  .chip {
+    background: #e9ecef;
+    border: none;
+    border-radius: 4px;
+    padding: 0.17rem 0.42rem;
+    font-size: 0.74rem;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    color: #495057;
+    line-height: 1.45;
+  }
+  .chip:hover { background: #4361ee; color: #fff; }
+
+  /* ── Modal ── */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.88);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 200;
+  }
+  .modal-overlay.hidden { display: none !important; }
+
+  .modal-box {
+    position: relative;
+    max-width: 960px;
+    width: 95%;
+  }
+  .modal-close {
+    position: absolute; top: -2.3rem; right: 0;
+    background: transparent; color: #ccc;
+    font-size: 1.5rem; line-height: 1;
+    padding: 0; border: none; cursor: pointer;
+  }
+  .modal-close:hover { color: #fff; }
+
+  /* ── Custom video player ── */
+  #player-wrap {
+    border-radius: 8px;
+    overflow: hidden;
+    background: #000;
+  }
+  #modal-video {
+    width: 100%;
+    display: block;
+    background: #000;
+    min-height: 120px;   /* visible black area while loading */
+  }
+
+  .player-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    background: #111;
+    padding: 0.45rem 0.7rem;
+  }
+
+  .p-btn {
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 1rem;
+    cursor: pointer;
+    padding: 0 0.2rem;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .p-btn:hover { color: #4361ee; }
+
+  .p-time {
+    font-size: 0.75rem;
+    font-family: ui-monospace, monospace;
+    color: #ccc;
+    flex-shrink: 0;
+    min-width: 2.8rem;
+    text-align: center;
+  }
+
+  /* Scrubber */
+  .scrub-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    padding: 0.55rem 0;
+    cursor: pointer;
+    position: relative;
+  }
+  .scrub-track {
+    position: relative;
+    width: 100%;
+    height: 4px;
+    background: rgba(255,255,255,.2);
+    border-radius: 2px;
+    transition: height .12s;
+  }
+  .scrub-wrap:hover .scrub-track { height: 6px; }
+
+  .scrub-fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: #4361ee;
+    border-radius: 2px;
+    pointer-events: none;
+    width: 0%;
+  }
+
+  /* Playhead thumb */
+  .scrub-thumb {
+    position: absolute;
+    top: 50%; left: 0;
+    width: 13px; height: 13px;
+    background: #fff;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .12s;
+  }
+  .scrub-wrap:hover .scrub-thumb { opacity: 1; }
+
+  /* Timestamp markers */
+  .ts-marker {
+    position: absolute;
+    top: 50%;
+    width: 3px; height: 14px;
+    background: #fbbf24;
+    border-radius: 1px;
+    transform: translate(-50%, -50%);
+    cursor: pointer;
+    transition: background .1s, width .1s;
+  }
+  .ts-marker:hover { background: #fff; width: 4px; }
+
+  /* Tooltip via ::before */
+  .ts-marker::before {
+    content: attr(data-time);
+    position: absolute;
+    bottom: calc(100% + 10px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,.85);
+    color: #fff;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: ui-monospace, monospace;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .1s;
+  }
+  .ts-marker:hover::before { opacity: 1; }
+
+  #modal-info { color: #999; margin: 0.45rem 0 0; font-size: 0.8rem; }
+</style>
+
+<div class="card">
+  <h2>Search</h2>
+  <div class="search-row">
+    <div class="search-col">
+      <h3>By Name</h3>
+      <p class="muted">Find all appearances of a labeled person.</p>
+      <form id="name-form">
+        <input type="text" id="name-input" list="persons-list"
+               placeholder="Type a name…" autocomplete="off">
+        <datalist id="persons-list">
+          {% for p in persons %}
+          <option value="{{ p.name }}">
+          {% endfor %}
+        </datalist>
+        <button type="submit" style="margin-top:0.5rem">Search</button>
+      </form>
+    </div>
+    <div class="search-col">
+      <h3>By Photo</h3>
+      <p class="muted">Upload a face photo to find matching appearances.</p>
+      <form id="photo-form">
+        <div class="file-row">
+          <input type="file" id="photo-input" accept="image/*">
+          <button type="submit">Find Matches</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div id="results-section" class="hidden">
+  <div class="card">
+    <h2 id="results-header"></h2>
+    <div id="results-list"></div>
+  </div>
+</div>
+
+<!-- Play modal -->
+<div class="modal-overlay hidden" id="modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal()">&#x2715;</button>
+    <div id="player-wrap">
+      <video id="modal-video"></video>
+      <div class="player-bar">
+        <button class="p-btn" id="btn-play" title="Play / Pause">&#9654;</button>
+        <span class="p-time" id="p-cur">0:00</span>
+        <div class="scrub-wrap" id="scrub-wrap">
+          <div class="scrub-track" id="scrub-track">
+            <div class="scrub-fill"  id="scrub-fill"></div>
+            <div id="scrub-markers"></div>
+            <div class="scrub-thumb" id="scrub-thumb"></div>
+          </div>
+        </div>
+        <span class="p-time" id="p-dur">0:00</span>
+        <button class="p-btn" id="btn-fs" title="Fullscreen">&#x26F6;</button>
+      </div>
+    </div>
+    <p id="modal-info"></p>
+  </div>
+</div>
+
+<script>
+(function () {
+  /* ── Helpers ── */
+  function fmtTime(sec) {
+    const s = Math.floor(sec || 0);
+    const m = Math.floor(s / 60);
+    const h = Math.floor(m / 60);
+    if (h > 0) return h + ':' + String(m % 60).padStart(2,'0') + ':' + String(s % 60).padStart(2,'0');
+    return m + ':' + String(s % 60).padStart(2,'0');
+  }
+
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  /* ── Group flat API results by video ── */
+  function groupByVideo(items, isPhoto) {
+    const map = new Map();
+    for (const item of items) {
+      if (!map.has(item.video_id)) {
+        map.set(item.video_id, {
+          video_id:    item.video_id,
+          filename:    item.filename,
+          person_name: item.person_name,
+          hits:        [],
+        });
+      }
+      map.get(item.video_id).hits.push(item);
+    }
+    const groups = [...map.values()];
+    if (isPhoto) {
+      groups.sort((a, b) => {
+        const bestA = Math.min(...a.hits.map(h => h.distance ?? 1));
+        const bestB = Math.min(...b.hits.map(h => h.distance ?? 1));
+        return bestA - bestB;
+      });
+    } else {
+      groups.sort((a, b) => b.hits.length - a.hits.length);
+    }
+    return groups;
+  }
+
+  /* Pick up to n evenly-spaced hits for the frame strip */
+  function sampleHits(hits, n) {
+    if (hits.length <= n) return hits;
+    const step = (hits.length - 1) / (n - 1);
+    return Array.from({length: n}, (_, i) => hits[Math.round(i * step)]);
+  }
+
+  /* ── Render ── */
+  let _groups = [];   // kept so playVideo can find all timestamps for a video
+
+  function showLoading(msg) {
+    document.getElementById('results-section').classList.remove('hidden');
+    document.getElementById('results-header').textContent = msg;
+    document.getElementById('results-list').innerHTML = '<p class="muted">Loading…</p>';
+  }
+
+  function renderResults(items, label, isPhoto) {
+    document.getElementById('results-section').classList.remove('hidden');
+
+    if (!items.length) {
+      document.getElementById('results-header').textContent = label;
+      document.getElementById('results-list').innerHTML = '<p class="muted">No results found.</p>';
+      return;
+    }
+
+    _groups = groupByVideo(items, isPhoto);
+
+    document.getElementById('results-header').textContent =
+      label + ' — ' + _groups.length + ' video' + (_groups.length !== 1 ? 's' : '') +
+      ', ' + items.length + ' appearance' + (items.length !== 1 ? 's' : '');
+
+    const html = _groups.map(function (g) {
+      // 3 evenly-spaced video frames
+      const sample = sampleHits(g.hits, 3);
+      const frames = sample.map(h =>
+        '<img src="/api/frame/' + g.video_id + '?t=' + Math.floor(h.timestamp_sec || 0) + '"' +
+        ' alt="" onerror="this.style.display=\'none\'">'
+      ).join('');
+
+      // Meta line
+      let meta = g.hits.length + ' appearance' + (g.hits.length !== 1 ? 's' : '');
+      if (g.person_name) {
+        meta += ' · ' + esc(g.person_name);
+      } else if (isPhoto) {
+        const best = Math.min(...g.hits.map(h => h.distance ?? 1));
+        meta += ' · best match ' + Math.round((1 - best) * 100) + '%';
+      }
+
+      // Timestamp chips — each opens the video at that moment
+      const chips = g.hits.map(h =>
+        '<button class="chip"' +
+        ' data-vid="' + g.video_id + '"' +
+        ' data-ts="'  + (h.timestamp_sec || 0) + '"' +
+        ' data-fn="'  + esc(g.filename) + '"' +
+        ' onclick="playChip(this)">' + fmtTime(h.timestamp_sec) + '</button>'
+      ).join('');
+
+      return '<div class="result-row card">' +
+        '<div class="frame-strip">' + frames + '</div>' +
+        '<div class="result-filename" title="' + esc(g.filename) + '">' + esc(g.filename) + '</div>' +
+        '<div class="result-meta">' + meta + '</div>' +
+        '<div class="chip-row">' + chips + '</div>' +
+        '</div>';
+    }).join('');
+
+    document.getElementById('results-list').innerHTML = '<div class="result-list">' + html + '</div>';
+  }
+
+  /* ── Search handlers ── */
+  document.getElementById('name-form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const name = document.getElementById('name-input').value.trim();
+    if (!name) return;
+    showLoading('Searching…');
+    try {
+      const resp = await fetch('/api/search?name=' + encodeURIComponent(name));
+      renderResults(await resp.json(), 'Results for "' + name + '"', false);
+    } catch { document.getElementById('results-list').innerHTML = '<p class="muted">Request failed.</p>'; }
+  });
+
+  document.getElementById('photo-form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const file = document.getElementById('photo-input').files[0];
+    if (!file) return;
+    showLoading('Analyzing photo…');
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const resp = await fetch('/api/search/photo', { method: 'POST', body: fd });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        document.getElementById('results-header').textContent = 'Error';
+        document.getElementById('results-list').innerHTML =
+          '<p class="muted">' + esc(err.detail || 'Search failed.') + '</p>';
+        return;
+      }
+      renderResults(await resp.json(), 'Matches for uploaded photo', true);
+    } catch { document.getElementById('results-list').innerHTML = '<p class="muted">Request failed.</p>'; }
+  });
+
+  /* ── Custom video player ── */
+  const modal      = document.getElementById('modal');
+  const videoEl    = document.getElementById('modal-video');
+  const playBtn    = document.getElementById('btn-play');
+  const scrubWrap  = document.getElementById('scrub-wrap');
+  const scrubTrack = document.getElementById('scrub-track');
+  const scrubFill  = document.getElementById('scrub-fill');
+  const scrubThumb = document.getElementById('scrub-thumb');
+  const markersDiv = document.getElementById('scrub-markers');
+  const pCur       = document.getElementById('p-cur');
+  const pDur       = document.getElementById('p-dur');
+  const modalInfo  = document.getElementById('modal-info');
+
+  // Sync scrubber + time display
+  videoEl.addEventListener('timeupdate', function () {
+    if (!videoEl.duration) return;
+    const pct = (videoEl.currentTime / videoEl.duration) * 100;
+    scrubFill.style.width  = pct + '%';
+    scrubThumb.style.left  = pct + '%';
+    pCur.textContent = fmtTime(videoEl.currentTime);
+  });
+
+  videoEl.addEventListener('loadedmetadata', function () {
+    pDur.textContent = fmtTime(videoEl.duration);
+    _placeMarkers();
+  });
+
+  videoEl.addEventListener('play',  function () { playBtn.innerHTML = '&#9646;&#9646;'; });
+  videoEl.addEventListener('pause', function () { playBtn.innerHTML = '&#9654;'; });
+
+  playBtn.addEventListener('click', function () {
+    videoEl.paused ? videoEl.play().catch(() => {}) : videoEl.pause();
+  });
+
+  // Scrubber click + drag
+  let _dragging = false;
+  function _seekFromEvent(e) {
+    const rect = scrubTrack.getBoundingClientRect();
+    const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    if (videoEl.duration) videoEl.currentTime = pct * videoEl.duration;
+  }
+  scrubWrap.addEventListener('mousedown', function (e) {
+    _dragging = true;
+    _seekFromEvent(e);
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', function (e) { if (_dragging) _seekFromEvent(e); });
+  document.addEventListener('mouseup',   function ()  { _dragging = false; });
+
+  // Fullscreen
+  document.getElementById('btn-fs').addEventListener('click', function () {
+    const wrap = document.getElementById('player-wrap');
+    document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen().catch(() => {});
+  });
+
+  // Place yellow marker lines at each detected timestamp
+  function _placeMarkers() {
+    markersDiv.innerHTML = '';
+    const dur = videoEl.duration;
+    if (!dur || !_activeTimestamps.length) return;
+    _activeTimestamps.forEach(function (ts) {
+      const pct = (ts / dur) * 100;
+      const m   = document.createElement('div');
+      m.className   = 'ts-marker';
+      m.style.left  = pct + '%';
+      m.dataset.time = fmtTime(ts);
+      m.addEventListener('click', function (e) {
+        e.stopPropagation();
+        videoEl.currentTime = ts;
+        videoEl.play().catch(() => {});
+      });
+      markersDiv.appendChild(m);
+    });
+  }
+
+  let _activeTimestamps = [];
+
+  function _openVideo(videoId, ts, filename) {
+    modal.classList.remove('hidden');
+    modalInfo.textContent = filename + ' · ' + fmtTime(ts);
+
+    // Gather all timestamps for this video from the stored groups
+    const group = _groups.find(g => String(g.video_id) === String(videoId));
+    _activeTimestamps = group ? group.hits.map(h => h.timestamp_sec || 0) : [ts];
+
+    const isSameVideo = videoEl.dataset.videoId === String(videoId);
+    if (!isSameVideo) {
+      videoEl.dataset.videoId = String(videoId);
+      videoEl.src = '/api/video/' + videoId;
+    }
+
+    function seekAndPlay() {
+      videoEl.currentTime = ts;
+      videoEl.play().catch(() => {});
+    }
+
+    if (videoEl.readyState >= 1) {
+      // Metadata already available — place markers now
+      if (!isSameVideo) _placeMarkers();
+      seekAndPlay();
+    } else {
+      videoEl.addEventListener('loadedmetadata', function () {
+        _placeMarkers();
+        seekAndPlay();
+      }, { once: true });
+    }
+  }
+
+  // Called by chip buttons in the result list
+  window.playChip = function (btn) {
+    _openVideo(btn.dataset.vid, parseFloat(btn.dataset.ts) || 0, btn.dataset.fn);
+  };
+
+  // Modal close
+  // Log video errors to console to aid debugging
+  videoEl.addEventListener('error', function () {
+    if (videoEl.error) console.error('Video error code', videoEl.error.code, videoEl.error.message);
+  });
+
+  window.closeModal = function () {
+    modal.classList.add('hidden');
+    videoEl.pause();
+    videoEl.removeAttribute('src');
+    videoEl.load();                  // fully resets the element
+    videoEl.dataset.videoId = '';
+    _activeTimestamps = [];
+    markersDiv.innerHTML = '';
+    pCur.textContent = '0:00';
+    pDur.textContent = '0:00';
+    scrubFill.style.width = '0%';
+    scrubThumb.style.left = '0%';
+  };
+
+  modal.addEventListener('click', function (e) { if (e.target === modal) closeModal(); });
+
+  // Keyboard shortcuts (only when modal is open)
+  document.addEventListener('keydown', function (e) {
+    if (modal.classList.contains('hidden')) return;
+    if (e.key === 'Escape')      { closeModal(); return; }
+    if (e.key === ' ')           { e.preventDefault(); videoEl.paused ? videoEl.play().catch(()=>{}) : videoEl.pause(); }
+    if (e.key === 'ArrowRight')  { e.preventDefault(); videoEl.currentTime = Math.min(videoEl.duration || 0, videoEl.currentTime + 5); }
+    if (e.key === 'ArrowLeft')   { e.preventDefault(); videoEl.currentTime = Math.max(0, videoEl.currentTime - 5); }
+  });
+}());
+</script>
+{% endblock %}

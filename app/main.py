@@ -10,6 +10,8 @@ from app.chroma import get_collection
 from app.api import index as index_api
 from app.api import persons as persons_api
 from app.api import cluster as cluster_api
+from app.api import search as search_api
+from app.api import video as video_api
 
 
 @asynccontextmanager
@@ -28,6 +30,8 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.include_router(index_api.router)
 app.include_router(persons_api.router)
 app.include_router(cluster_api.router)
+app.include_router(search_api.router)
+app.include_router(video_api.router)
 
 
 @app.get("/")
@@ -38,6 +42,16 @@ def home(request: Request):
     ).fetchall()
     conn.close()
     return templates.TemplateResponse(request, "index.html", {"videos": [dict(v) for v in videos]})
+
+
+@app.get("/search")
+def search_page(request: Request):
+    conn = get_connection()
+    persons = conn.execute(
+        "SELECT id, name FROM persons WHERE name IS NOT NULL ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return templates.TemplateResponse(request, "search.html", {"persons": [dict(p) for p in persons]})
 
 
 @app.get("/label")
