@@ -25,8 +25,14 @@ def init_db() -> None:
             name           TEXT,
             thumbnail_path TEXT,
             face_count     INTEGER DEFAULT 0,
+            samples        TEXT,
             created_at     TEXT DEFAULT (datetime('now'))
         );
     """)
+    # Migrate existing installations that pre-date the samples column
+    try:
+        conn.execute("ALTER TABLE persons ADD COLUMN samples TEXT")
+    except Exception:
+        pass  # column already exists
     conn.commit()
     conn.close()

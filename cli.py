@@ -22,6 +22,16 @@ def cmd_index(args) -> None:
     )
 
 
+def cmd_cluster(args) -> None:
+    from app.database import init_db
+    from app.chroma import get_collection
+    from app.clusterer import run_clusterer
+
+    init_db()
+    get_collection()
+    run_clusterer(eps=args.eps, min_samples=args.min_samples)
+
+
 def cmd_stats(args) -> None:
     from app.database import get_connection
     from app.chroma import get_collection
@@ -63,6 +73,17 @@ def main() -> None:
         help="Use GPU (CUDAExecutionProvider) for face inference",
     )
     p_index.set_defaults(func=cmd_index)
+
+    p_cluster = subs.add_parser("cluster", help="Cluster faces into person identities")
+    p_cluster.add_argument(
+        "--eps", type=float, default=0.6,
+        help="DBSCAN eps in euclidean space on L2-normed embeddings (default: 0.6)",
+    )
+    p_cluster.add_argument(
+        "--min-samples", type=int, default=3,
+        help="DBSCAN min_samples — minimum faces to form a cluster (default: 3)",
+    )
+    p_cluster.set_defaults(func=cmd_cluster)
 
     p_stats = subs.add_parser("stats", help="Show library statistics")
     p_stats.set_defaults(func=cmd_stats)

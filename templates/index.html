@@ -24,6 +24,40 @@
     <div id="prog-text" class="muted" style="margin-top:0.4rem">Starting…</div>
 </div>
 
+{% if videos %}
+<div class="card">
+    <h2>Indexed Videos <span class="muted" style="font-weight:400;font-size:0.9rem">({{ videos|length }})</span></h2>
+    <table style="width:100%;border-collapse:collapse;font-size:0.875rem">
+        <thead>
+            <tr style="border-bottom:2px solid #e9ecef;text-align:left">
+                <th style="padding:0.4rem 0.6rem">File</th>
+                <th style="padding:0.4rem 0.6rem">Path</th>
+                <th style="padding:0.4rem 0.6rem;white-space:nowrap">Duration</th>
+                <th style="padding:0.4rem 0.6rem;white-space:nowrap">Indexed at</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for v in videos %}
+            <tr style="border-bottom:1px solid #f1f3f5">
+                <td style="padding:0.4rem 0.6rem;font-weight:500">{{ v.filename }}</td>
+                <td style="padding:0.4rem 0.6rem;color:#6c757d;word-break:break-all">{{ v.path }}</td>
+                <td style="padding:0.4rem 0.6rem;white-space:nowrap">
+                    {% if v.duration_sec %}
+                        {% set m = (v.duration_sec // 60)|int %}
+                        {% set s = (v.duration_sec % 60)|int %}
+                        {{ '%d:%02d'|format(m, s) }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td style="padding:0.4rem 0.6rem;white-space:nowrap;color:#6c757d">{{ v.indexed_at }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 <script>
 let pollTimer = null;
 

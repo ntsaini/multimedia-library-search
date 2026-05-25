@@ -287,6 +287,18 @@ POST /api/persons/merge              → body: {source_id, target_id} → reassi
 
 **Verification:** Index a folder containing known people. Run cluster. Open `/label` — confirm distinct people appear as separate clusters. Assign a name — confirm it persists after restarting the server.
 
+### Future: Label Preservation Across Re-clustering
+
+Currently, re-running `cluster` deletes all persons and regenerates UUIDs, which erases any names the user has assigned. A future pass should preserve labels:
+
+1. Before wiping `persons`, snapshot `{old_person_id → name}` from SQLite.
+2. After building new clusters, for each new cluster compare its face IDs against the old `person_id` assignments stored in ChromaDB (pre-reset).
+3. Find the old `person_id` that contributed the majority of faces to the new cluster (argmax overlap).
+4. If that old person had a name and the overlap fraction exceeds a threshold (e.g. > 50%), carry the name forward to the new person record.
+5. This handles splits conservatively (only the dominant inheritor gets the name) and merges naturally (the target already has the name; the source's name is discarded with a warning).
+
+This is not built in Phase 2 because it adds meaningful complexity and the typical workflow is: tune eps → cluster → label (one-shot). Add it when users report losing labels across re-clusters is a real friction point.
+
 ---
 
 ## Phase 3 — Search

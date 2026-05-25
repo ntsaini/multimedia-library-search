@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Label People — Library Search{% endblock %}
+{% block content %}
+<style>
+  .persons-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+  }
+  .person-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1rem;
+  }
+  .thumb-main {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #dee2e6;
+  }
+  .thumb-samples {
+    display: flex;
+    gap: 4px;
+  }
+  .thumb-samples img {
+    flex: 1;
+    min-width: 0;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #dee2e6;
+  }
+  .label-form {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .label-form input[type=text] {
+    flex: 1;
+    min-width: 0;
+  }
+  .save-ok { color: #198754; font-size: 0.8rem; }
+  .save-status { min-height: 1.1em; font-size: 0.8rem; }
+  .merge-label { font-size: 0.82rem; display: flex; align-items: center; gap: 0.3rem; color: #6c757d; }
+  .merge-bar {
+    position: sticky;
+    bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: #1a1a2e;
+    color: #fff;
+    border-radius: 10px;
+    padding: 0.9rem 1.25rem;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  }
+  .merge-bar button { background: #4361ee; }
+  .merge-bar .btn-cancel { background: #6c757d; }
+  .merge-info { flex: 1; font-size: 0.9rem; }
+</style>
+
+<div class="card">
+  <h2>Label People</h2>
+  {% if persons %}
+  <p class="muted">{{ persons|length }} person cluster{{ 's' if persons|length != 1 else '' }} found.
+    Assign names, then select two cards and merge if they are the same person.</p>
+  {% else %}
+  <p class="muted">No persons clustered yet. Run <code>python cli.py cluster</code> first.</p>
+  {% endif %}
+</div>
+
+{% if persons %}
+<div class="persons-grid" id="persons-grid">
+  {% for person in persons %}
+  <div class="person-card card" id="pcard-{{ person.id }}">
+
+    {% if person.thumbnail_path %}
+    <img class="thumb-main"
+         src="/static/{{ person.thumbnail_path }}"
+         alt="person"
+         onerror="this.style.visibility='hidden'">
+    {% else %}
+    <div class="thumb-main" style="display:flex;align-items:center;justify-content:center;color:#adb5bd;font-size:2rem;">?</div>
+    {% endif %}
+
+    {% if person.samples %}
+    <div class="thumb-samples">
+      {% for s in person.samples %}
+      <img src="/static/{{ s }}" alt="" onerror="this.style.display='none'">
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="muted">{{ person.face_count }} face{{ 's' if person.face_count != 1 else '' }}</div>
+
+    <form class="label-form"
+          hx-post="/api/persons/{{ person.id }}/label"
+          hx-target="#saved-{{ person.id }}"
+          hx-swap="innerHTML"
+          hx-encoding="application/x-www-form-urlencoded">
+      <input type="text" name="name"
+             value="{{ person.name or '' }}"
+             placeholder="Unknown">
+      <button type="submit">Save</button>
+    </form>
+    <div class="save-status" id="saved-{{ person.id }}">
+      {% if person.name %}<span class="save-ok">{{ person.name }}</span>{% endif %}
+    </div>
+
+    <label class="merge-label">
+      <input type="checkbox" class="merge-check" value="{{ person.id }}">
+      Select to merge
+    </label>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="merge-bar hidden" id="merge-bar">
+  <span class="merge-info" id="merge-info"></span>
+  <button onclick="doMerge()">Merge Selected</button>
+  <button class="btn-cancel" onclick="clearMerge()">Cancel</button>
+</div>
+
+<script>
+(function () {
+  const bar = document.getElementById('merge-bar');
+  const info = document.getElementById('merge-info');
+
+  function selected() {
+    return [...document.querySelectorAll('.merge-check:checked')];
+  }
+
+  document.addEventListener('change', function (e) {
+    if (!e.target.classList.contains('merge-check')) return;
+    const sel = selected();
+    if (sel.length >= 2) {
+      bar.classList.remove('hidden');
+      info.textContent = sel.length + ' persons selected — first selected becomes the kept identity';
+    } else {
+      bar.classList.add('hidden');
+    }
+  });
+
+  window.doMerge = function () {
+    const sel = selected();
+    if (sel.length < 2) return;
+    const target_id = sel[0].value;
+    const sources = sel.slice(1).map(c => c.value);
+    Promise.all(
+      sources.map(source_id =>
+        fetch('/api/persons/merge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_id, target_id }),
+        })
+      )
+    ).then(() => location.reload());
+  };
+
+  window.clearMerge = function () {
+    document.querySelectorAll('.merge-check').forEach(c => { c.checked = false; });
+    bar.classList.add('hidden');
+  };
+}());
+</script>
+{% endif %}
+{% endblock %}
