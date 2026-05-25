@@ -22,7 +22,21 @@ pip install -r requirements.txt
 
 > **GPU users:** replace `onnxruntime` with `onnxruntime-gpu` in `requirements.txt` before running `pip install`.
 
-## Usage
+## Workflow
+
+```
+index → (auto-cluster) → label → search
+```
+
+1. `python cli.py index /path/to/videos` — extract faces; incremental cluster runs automatically
+2. Open `/label` — assign names to person clusters; merge duplicates; re-cluster if needed
+3. Open `/search` — search by name or upload a reference photo to find appearances
+
+For the first run with no existing clusters, the auto-triggered incremental pass falls back to a full cluster automatically.
+
+---
+
+## CLI Reference
 
 ### Index a video directory
 
@@ -30,16 +44,14 @@ pip install -r requirements.txt
 python cli.py index /path/to/videos
 ```
 
-Options:
-
 | Flag | Default | Description |
 |---|---|---|
 | `--interval 2.0` | `1.0` | Seconds between sampled keyframes. Higher = faster, lower accuracy. |
 | `--gpu` | off | Use CUDA for face inference (requires `onnxruntime-gpu`). |
-| `--no-cluster` | off | Skip the automatic incremental cluster pass that runs after indexing. |
+| `--no-cluster` | off | Skip the automatic incremental cluster pass after indexing. |
 | `--eps 0.6` | `0.6` | DBSCAN eps used by the auto-triggered incremental cluster. |
 
-After indexing completes, an incremental cluster pass runs automatically so new faces appear in `/label` without a separate step. Pass `--no-cluster` to skip it (e.g. when batch-indexing several directories before a single cluster run).
+After indexing, an incremental cluster pass runs automatically so new faces appear in `/label` without a separate step. Pass `--no-cluster` when batch-indexing several directories before a single cluster run.
 
 ### Cluster faces into person identities
 
@@ -48,17 +60,15 @@ python cli.py cluster              # full DBSCAN — initial setup or restructur
 python cli.py cluster --incremental  # assign new faces only, preserve labels
 ```
 
-**Full cluster** groups all faces from scratch using DBSCAN. Use this on first run or when you want to tune eps and restructure everything. **All existing labels are lost.**
+**Full cluster** groups all faces from scratch using DBSCAN. Use this on first run or to tune `eps` and restructure everything. **All existing labels are lost.**
 
-**Incremental cluster** assigns only unlabeled faces (new since the last run) to existing persons using centroid distance, then runs a mini-DBSCAN on the remainder to discover new persons. Existing labels are fully preserved.
-
-Options:
+**Incremental cluster** assigns only unlabeled (new) faces to existing persons using centroid distance, then runs a mini-DBSCAN on the remainder to discover new persons. Existing labels are fully preserved.
 
 | Flag | Default | Description |
 |---|---|---|
 | `--incremental` | off | Run incremental mode instead of full DBSCAN. |
 | `--eps 0.6` | `0.6` | Grouping radius (euclidean distance on L2-normed embeddings). Lower = tighter clusters. |
-| `--min-samples 3` | `3` | Minimum faces required to form a cluster. Lower = fewer faces needed per person. |
+| `--min-samples 3` | `3` | Minimum faces required to form a cluster. |
 
 ### Start the web UI
 
@@ -68,57 +78,64 @@ python cli.py serve
 
 Opens at `http://127.0.0.1:8000`. Options: `--host 0.0.0.0 --port 8000`.
 
-### Check library statistics
+### Other commands
 
 ```bash
-python cli.py stats
+python cli.py stats          # video count, face count, labeled/unlabeled persons
+python cli.py prune          # remove stale data for deleted videos
+python cli.py prune --dry-run
 ```
 
-Output:
-```
-Videos:  12
-Faces:   3,847
-Persons: 5 (3 labeled)
-```
-
-## Workflow
-
-```
-index → (auto-cluster) → label → search
-```
-
-1. `python cli.py index /path/to/videos` — extract faces; incremental cluster runs automatically at the end
-2. Open `/label` — assign names to each person cluster; trigger re-cluster from the UI if needed
-3. Open `/search` — search by name or reference photo *(Phase 3)*
-
-For the first run with no existing clusters, the auto-triggered incremental pass falls back to a full cluster automatically.
+---
 
 ## Web UI
 
-| Page | Path | Description |
+| Page | URL | Description |
 |---|---|---|
-| Index | `/` | Start indexing, watch live progress, see previously indexed videos |
-| Label | `/label` | Assign names to person clusters; merge duplicates; trigger clustering |
-| Search | `/search` | Search by name or reference photo *(Phase 3)* |
+| Index | `/` | Start indexing, watch live progress, see all indexed videos |
+| Label | `/label` | Assign names to person clusters; merge duplicates; trigger re-clustering |
+| Search | `/search` | Search by person name or reference photo; play results in-browser |
 
-The Label page includes a **Clustering** panel with two actions:
+### Label page
 
-- **Cluster Unlabeled Faces** — incremental pass; safe to run at any time, labels preserved
-- **Full Re-cluster** — restructures everything from scratch; existing labels are erased
+- **Cluster Unlabeled Faces** — incremental pass; labels preserved, safe to run any time
+- **Full Re-cluster** — restructures from scratch; existing labels are erased
+- Both controls accept `eps` and `min-samples` with inline tooltips
+- Select two cards and click **Merge Selected** to combine duplicate clusters
 
-Both accept eps and min-samples inputs with inline descriptions.
+### Search page
+
+**Search by name** — type a labeled person's name (autocomplete from existing labels). Results appear as a list grouped by video: three scene-frame previews, a count of appearances, and a row of timestamp chips. Clicking any chip opens the video at that exact moment.
+
+**Search by photo** — upload any image containing a face. InsightFace computes the embedding and finds the closest matches across all indexed faces. Results are sorted by match confidence and grouped by video the same way.
+
+**Video player** — custom player with:
+- Timestamp markers on the scrubber (yellow lines at every detected appearance)
+- Hover a marker to see the time; click to jump to it
+- `Space` — play / pause
+- `←` / `→` — seek ±5 seconds
+- `Esc` — close
+- Fullscreen button
+
+---
 
 ## API
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/index` | Start indexing a directory |
+| `POST` | `/api/index` | Start indexing a directory (`directory_path`, `interval_sec`) |
 | `GET` | `/api/index/status` | Indexing progress |
-| `GET` | `/api/persons` | List all person clusters with face counts |
-| `POST` | `/api/persons/{id}/label` | Save a name for a person |
-| `POST` | `/api/persons/merge` | Merge two person clusters into one |
 | `POST` | `/api/cluster` | Start a cluster job (`incremental`, `eps`, `min_samples`) |
 | `GET` | `/api/cluster/status` | Cluster job progress |
+| `GET` | `/api/persons` | List all person clusters (id, name, thumbnail, face_count) |
+| `POST` | `/api/persons/{id}/label` | Save a name for a person |
+| `POST` | `/api/persons/merge` | Merge two clusters (`source_id`, `target_id`) |
+| `GET` | `/api/search?name=Alice` | Find all appearances of a named person |
+| `POST` | `/api/search/photo` | Upload a face photo; returns ranked matches |
+| `GET` | `/api/video/{id}` | Stream a video file with HTTP range request support |
+| `GET` | `/api/frame/{id}?t=47` | Extract a single JPEG frame at the given timestamp (cached) |
+
+---
 
 ## Project structure
 
@@ -133,13 +150,16 @@ multimedia-library-search/
 │   ├── indexer.py           # Frame extraction + InsightFace pipeline
 │   ├── clusterer.py         # Full DBSCAN + incremental clusterer
 │   └── api/
-│       ├── index.py         # POST /api/index, GET /api/index/status
-│       ├── cluster.py       # POST /api/cluster, GET /api/cluster/status
-│       └── persons.py       # GET/POST /api/persons — label + merge
-└── templates/               # Jinja2 HTML templates
-    ├── base.html
-    ├── index.html
-    └── label.html
+│       ├── index.py         # /api/index
+│       ├── cluster.py       # /api/cluster
+│       ├── persons.py       # /api/persons
+│       ├── search.py        # /api/search, /api/search/photo
+│       └── video.py         # /api/video, /api/frame
+└── templates/
+    ├── base.html            # Nav + shared layout
+    ├── index.html           # Indexing page
+    ├── label.html           # Labeling + clustering page
+    └── search.html          # Search page with custom video player
 ```
 
 Generated at runtime (gitignored):
@@ -152,12 +172,12 @@ output/              # Compiled highlight reels (Phase 4)
 
 ## Data
 
-All indexed data lives in `data/` and `static/thumbnails/`. Delete those directories to reset the library.
+All indexed data lives in `data/` and `static/thumbnails/`. Delete those directories to start over. Use `python cli.py prune` to remove only the data for videos that have been deleted from disk.
 
 ## Roadmap
 
 - [x] Phase 1 — Indexing pipeline + CLI
 - [x] Phase 2 — Face clustering + labeling UI
 - [x] Phase 2.5 — Progressive incremental clustering
-- [ ] Phase 3 — Search by name or reference photo
-- [ ] Phase 4 — Highlight reel compilation
+- [x] Phase 3 — Search by name or reference photo + in-browser playback
+- [ ] Phase 4 — Highlight reel compilation (FFmpeg clip extraction + concat)

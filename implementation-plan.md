@@ -437,6 +437,17 @@ Serves the source video file from disk using `StreamingResponse` with HTTP range
 
 **Verification:** Label a person in Phase 2. Search by their name — confirm results include correct videos and timestamps. Click Play — confirm video opens at the right moment.
 
+### Phase 3 implementation notes (actual vs. plan)
+
+- Name search uses `LOWER(name) LIKE LOWER(?)` for case-insensitive partial match; all matching persons are combined into one result set.
+- Results are deduplicated server-side to one hit per (video_id, minute) before returning, capping at 200 total — avoids flooding when a person appears every second in a long video.
+- Client-side grouping: the flat API list is grouped by `video_id` in JS. Name search sorts groups by most appearances first; photo search sorts by best (lowest) cosine distance first.
+- Each result card shows three evenly-sampled video frames (not face crops) via `GET /api/frame/{id}?t=` — on-demand OpenCV extraction, LRU-cached for 500 frames per server session.
+- Custom video player replaces native controls: play/pause, click-to-seek scrubber that expands on hover, yellow marker lines at each detected timestamp, tooltip on marker hover, `Space`/`←`/`→`/`Esc` keyboard shortcuts, fullscreen.
+- Markers are placed after `loadedmetadata` using `(ts / duration) * 100%` positioning. All timestamps for the active video are stored in a module-level `_activeTimestamps` array and re-placed whenever the video changes.
+- `videoEl.removeAttribute('src'); videoEl.load()` is used on modal close (not `src = ''`) to fully reset the element state across browsers.
+- InsightFace for photo search is lazy-initialised on first request (module-level singleton); uses `MODEL_NAME_DEFAULT` (`buffalo_sc`) to match the default indexing model.
+
 ---
 
 ## Phase 4 — Highlight Reel Compilation
