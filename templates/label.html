@@ -66,8 +66,68 @@
   <p class="muted">{{ persons|length }} person cluster{{ 's' if persons|length != 1 else '' }} found.
     Assign names, then select two cards and merge if they are the same person.</p>
   {% else %}
-  <p class="muted">No persons clustered yet. Run <code>python cli.py cluster</code> first.</p>
+  <p class="muted">No persons clustered yet — use the controls below or run <code>python cli.py cluster</code>.</p>
   {% endif %}
+</div>
+
+<div class="card" id="cluster-card">
+  <h2>Clustering</h2>
+  <div style="display:flex;gap:2rem;flex-wrap:wrap">
+
+    <div style="flex:1;min-width:220px">
+      <h3>Cluster Unlabeled Faces</h3>
+      <p class="muted" style="margin:0 0 0.75rem">Assigns new faces to existing persons and discovers new ones. Existing labels are preserved.</p>
+      <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
+            eps
+            <span class="muted" style="font-weight:400"> — grouping radius</span>
+          </label>
+          <input type="number" id="eps-inc" value="0.6" min="0.1" step="0.05" style="width:75px"
+                 title="Euclidean distance threshold on L2-normed embeddings. Lower = stricter (more, smaller clusters). Higher = looser (fewer, larger clusters). Typical range: 0.4–0.9.">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">lower = stricter</div>
+        </div>
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
+            min-samples
+            <span class="muted" style="font-weight:400"> — noise threshold</span>
+          </label>
+          <input type="number" id="ms-inc" value="3" min="1" style="width:65px"
+                 title="Minimum number of faces required to form a person cluster. Faces in groups smaller than this are marked as noise (unlabeled). Lower = fewer faces needed per person.">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">min faces per person</div>
+        </div>
+        <button onclick="startCluster(true)" style="margin-bottom:1.3rem">Cluster Unlabeled</button>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:220px;padding-left:2rem;border-left:1px solid #e9ecef">
+      <h3>Full Re-cluster</h3>
+      <p class="muted" style="margin:0 0 0.75rem">Runs DBSCAN on all faces from scratch. <strong>All existing labels will be lost.</strong></p>
+      <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
+            eps
+            <span class="muted" style="font-weight:400"> — grouping radius</span>
+          </label>
+          <input type="number" id="eps-full" value="0.6" min="0.1" step="0.05" style="width:75px"
+                 title="Euclidean distance threshold on L2-normed embeddings. Lower = stricter (more, smaller clusters). Higher = looser (fewer, larger clusters). Typical range: 0.4–0.9.">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">lower = stricter</div>
+        </div>
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
+            min-samples
+            <span class="muted" style="font-weight:400"> — noise threshold</span>
+          </label>
+          <input type="number" id="ms-full" value="3" min="1" style="width:65px"
+                 title="Minimum number of faces required to form a person cluster. Faces in groups smaller than this are marked as noise (unlabeled). Lower = fewer faces needed per person.">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">min faces per person</div>
+        </div>
+        <button onclick="startCluster(false)" style="background:#dc3545;margin-bottom:1.3rem">Re-cluster All</button>
+      </div>
+    </div>
+
+  </div>
+  <div id="cluster-status" style="margin-top:0.75rem;min-height:1.2em"></div>
 </div>
 
 {% if persons %}
@@ -124,6 +184,60 @@
 
 <script>
 (function () {
+  /* ── Clustering ── */
+  let clusterTimer = null;
+
+  window.startCluster = async function (incremental) {
+    if (!incremental && !confirm('Full re-cluster will erase all existing labels. Continue?')) return;
+    const eps       = parseFloat(document.getElementById(incremental ? 'eps-inc'  : 'eps-full').value) || 0.6;
+    const minSamples = parseInt(document.getElementById(incremental ? 'ms-inc' : 'ms-full').value)   || 3;
+    const resp = await fetch('/api/cluster', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({incremental, eps, min_samples: minSamples}),
+    });
+    const data = await resp.json();
+    if (data.status === 'already_running') { showCS('Already running…', false); return; }
+    showCS('Running…', false);
+    schedulePollCS();
+  };
+
+  function schedulePollCS() {
+    clearInterval(clusterTimer);
+    clusterTimer = setInterval(pollCS, 2000);
+  }
+
+  async function pollCS() {
+    let d;
+    try { d = await (await fetch('/api/cluster/status')).json(); } catch { return; }
+    if (d.status === 'running') {
+      showCS(d.mode === 'incremental' ? 'Clustering unlabeled faces…' : 'Full re-cluster running…', false);
+    } else if (d.status === 'done') {
+      clearInterval(clusterTimer);
+      const r = d.result || {};
+      const msg = d.mode === 'incremental'
+        ? `Done — ${r.assigned ?? 0} assigned, ${r.new_clusters ?? 0} new persons, ${r.noise ?? 0} noise.`
+        : `Done — ${r.clusters ?? 0} persons created, ${r.noise ?? 0} noise.`;
+      showCS(msg, true);
+      setTimeout(() => location.reload(), 1500);
+    } else if (d.status === 'error') {
+      clearInterval(clusterTimer);
+      showCS('Error: ' + d.error, false);
+    }
+  }
+
+  function showCS(msg, ok) {
+    document.getElementById('cluster-status').innerHTML =
+      `<span class="${ok ? 'save-ok' : 'muted'}">${msg}</span>`;
+  }
+
+  // Resume polling if a job was already running when the page loaded
+  (async function () {
+    const d = await (await fetch('/api/cluster/status')).json();
+    if (d.status === 'running') { showCS('Clustering in progress…', false); schedulePollCS(); }
+  }());
+
+  /* ── Merge ── */
   const bar = document.getElementById('merge-bar');
   const info = document.getElementById('merge-info');
 

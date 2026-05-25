@@ -287,7 +287,7 @@ POST /api/persons/merge              → body: {source_id, target_id} → reassi
 
 **Verification:** Index a folder containing known people. Run cluster. Open `/label` — confirm distinct people appear as separate clusters. Assign a name — confirm it persists after restarting the server.
 
-### Future: Label Preservation Across Re-clustering
+### Future: Label Preservation Across Full Re-clustering
 
 Currently, re-running `cluster` deletes all persons and regenerates UUIDs, which erases any names the user has assigned. A future pass should preserve labels:
 
@@ -297,7 +297,102 @@ Currently, re-running `cluster` deletes all persons and regenerates UUIDs, which
 4. If that old person had a name and the overlap fraction exceeds a threshold (e.g. > 50%), carry the name forward to the new person record.
 5. This handles splits conservatively (only the dominant inheritor gets the name) and merges naturally (the target already has the name; the source's name is discarded with a warning).
 
-This is not built in Phase 2 because it adds meaningful complexity and the typical workflow is: tune eps → cluster → label (one-shot). Add it when users report losing labels across re-clusters is a real friction point.
+This is not built in Phase 2 because the typical workflow is: tune eps → cluster → label (one-shot). The incremental clustering approach below makes full re-clusters rare, reducing this friction further.
+
+---
+
+## Phase 2.5 — Progressive (Incremental) Clustering
+
+**Objective:** As new videos are indexed, assign new faces to existing person clusters without re-running full DBSCAN. Labels survive across all incremental runs. A full re-cluster remains available for initial setup or restructuring.
+
+**CLI:**
+```
+python cli.py cluster              # full DBSCAN — initial setup or restructure
+python cli.py cluster --incremental  # assign new faces only, discover new persons
+```
+
+After indexing, `index` automatically triggers `cluster --incremental` so new faces appear in `/label` without a manual step. Pass `--no-cluster` to skip.
+
+### Data model changes
+
+Add `centroid TEXT` column to the `persons` SQLite table — JSON-serialised float array (512 floats, same dimension as InsightFace normed embedding). Stored after every full cluster run and updated in-place as new faces are assigned incrementally.
+
+```sql
+ALTER TABLE persons ADD COLUMN centroid TEXT;
+```
+
+### Full cluster (existing behaviour, extended)
+
+After DBSCAN completes, compute and store the centroid for each new person:
+
+```python
+centroid = cluster_embeddings.mean(axis=0)
+centroid /= np.linalg.norm(centroid)   # re-normalise after averaging
+persons_row["centroid"] = json.dumps(centroid.tolist())
+```
+
+### `run_incremental_clusterer()` — step by step
+
+1. Load all person centroids from SQLite → stack into matrix `C` (shape: `[P, 512]`)
+2. If `C` is empty (no persons yet), fall back to full cluster automatically
+3. Fetch all `unlabeled` face embeddings from ChromaDB (new faces since last run)
+4. If none, exit early — nothing to do
+5. For each new face embedding `f`:
+   - Compute euclidean distance to every centroid: `dists = ||C - f||`
+   - `best_person, best_dist = argmin(dists)`
+   - If `best_dist < eps` → assign to `best_person`:
+     - Update `person_id` in ChromaDB
+     - Update centroid (incremental mean): `new_c = (old_c * N + f) / (N + 1)`, then re-normalise
+     - Increment `face_count` and persist updated centroid to SQLite
+   - Else → add to `unmatched` list
+6. Run DBSCAN only on `unmatched` embeddings → new clusters become new persons (with UUIDs, medoids, samples, centroids stored as in the full cluster path)
+7. All label updates are purely additive — no existing person is deleted or renamed
+
+### Centroid update formula
+
+```python
+new_centroid = (old_centroid * face_count + new_embedding) / (face_count + 1)
+new_centroid /= np.linalg.norm(new_centroid)
+```
+
+Batch all SQLite centroid writes at the end of the run (not per-face) to avoid thrashing.
+
+### Merge update
+
+When two persons are merged, recompute the target's centroid as a weighted average:
+
+```python
+merged_centroid = (c_target * n_target + c_source * n_source) / (n_target + n_source)
+merged_centroid /= np.linalg.norm(merged_centroid)
+```
+
+### Auto-trigger after index
+
+In `run_indexer()`, after the final summary line:
+
+```python
+if auto_cluster and newly_indexed > 0:
+    from app.clusterer import run_incremental_clusterer
+    run_incremental_clusterer(eps=eps)
+```
+
+`auto_cluster=True` by default; `--no-cluster` on the `index` command sets it to `False`.
+
+### Future: Re-sync Centroids
+
+A lightweight middle ground between incremental (which drifts) and full re-cluster (which loses labels). Re-sync recomputes each person's centroid from their actual assigned faces without changing any `person_id` assignments:
+
+1. For each person in SQLite, query ChromaDB: `collection.get(where={"person_id": pid}, include=["embeddings"])`
+2. Compute mean of all embeddings → L2-normalise → write back to `persons.centroid`
+3. No person is created, deleted, or renamed — purely a centroid refresh
+
+This corrects drift that accumulates from many incremental runs (where each new face nudges the running-mean centroid slightly). Can be exposed as `python cli.py cluster --resync` and a "Re-sync Centroids" button on `/label`. Run it whenever the incremental clusterer starts producing unexpected new-person false positives.
+
+### Known limitations
+
+- **Centroid drift**: repeated incremental runs shift centroids as running means accumulate. A person's centroid after 1000 faces may differ noticeably from after 10 faces. Periodic full re-cluster (user-triggered) corrects this.
+- **No retrospective re-assignment**: incremental never moves already-assigned faces. Mis-assignments from early runs require a manual merge in `/label` or a full re-cluster.
+- **New-person false positives**: if a known person appears in an atypical pose/lighting that lands outside `eps` from their centroid, a new cluster is created and the user must merge it in `/label`. This is the same manual-merge UX as today, but the exception rather than the norm.
 
 ---
 

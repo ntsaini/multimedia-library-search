@@ -71,7 +71,13 @@ def _extract_frames(cap: cv2.VideoCapture, interval_sec: float):
         frame_idx += 1
 
 
-def run_indexer(directory: str, interval_sec: float = 1.0, use_gpu: bool = False) -> None:
+def run_indexer(
+    directory: str,
+    interval_sec: float = 1.0,
+    use_gpu: bool = False,
+    auto_cluster: bool = True,
+    eps: float = 0.6,
+) -> None:
     global index_progress
 
     index_progress.update({
@@ -200,6 +206,12 @@ def run_indexer(directory: str, interval_sec: float = 1.0, use_gpu: bool = False
                 f"\nDone. {newly_indexed} video(s) indexed{skip_note} | "
                 f"{total_faces:,} faces | {h:02d}:{m:02d}:{s:02d}"
             )
+
+        if auto_cluster and newly_indexed > 0:
+            index_progress["current_video"] = "Clustering new faces…"
+            from app.clusterer import run_incremental_clusterer
+            run_incremental_clusterer(eps=eps)
+
         index_progress["status"] = "done"
 
     except Exception as exc:

@@ -36,23 +36,29 @@ Options:
 |---|---|---|
 | `--interval 2.0` | `1.0` | Seconds between sampled keyframes. Higher = faster, lower accuracy. |
 | `--gpu` | off | Use CUDA for face inference (requires `onnxruntime-gpu`). |
+| `--no-cluster` | off | Skip the automatic incremental cluster pass that runs after indexing. |
+| `--eps 0.6` | `0.6` | DBSCAN eps used by the auto-triggered incremental cluster. |
+
+After indexing completes, an incremental cluster pass runs automatically so new faces appear in `/label` without a separate step. Pass `--no-cluster` to skip it (e.g. when batch-indexing several directories before a single cluster run).
 
 ### Cluster faces into person identities
 
-After indexing, group detected faces into clusters — each cluster becomes one person identity:
-
 ```bash
-python cli.py cluster
+python cli.py cluster              # full DBSCAN — initial setup or restructure
+python cli.py cluster --incremental  # assign new faces only, preserve labels
 ```
+
+**Full cluster** groups all faces from scratch using DBSCAN. Use this on first run or when you want to tune eps and restructure everything. **All existing labels are lost.**
+
+**Incremental cluster** assigns only unlabeled faces (new since the last run) to existing persons using centroid distance, then runs a mini-DBSCAN on the remainder to discover new persons. Existing labels are fully preserved.
 
 Options:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--eps 0.6` | `0.6` | DBSCAN eps (euclidean distance on L2-normed embeddings). Lower = tighter clusters. |
-| `--min-samples 3` | `3` | Minimum faces required to form a cluster. |
-
-Re-running cluster overwrites previous groupings. **Any names you have assigned will be lost**, so label after clustering, not before.
+| `--incremental` | off | Run incremental mode instead of full DBSCAN. |
+| `--eps 0.6` | `0.6` | Grouping radius (euclidean distance on L2-normed embeddings). Lower = tighter clusters. |
+| `--min-samples 3` | `3` | Minimum faces required to form a cluster. Lower = fewer faces needed per person. |
 
 ### Start the web UI
 
@@ -78,31 +84,41 @@ Persons: 5 (3 labeled)
 ## Workflow
 
 ```
-index → cluster → label (web UI) → search (web UI)
+index → (auto-cluster) → label → search
 ```
 
-1. `python cli.py index /path/to/videos` — extract and store face embeddings
-2. `python cli.py cluster` — group faces into person identities
-3. Open `/label` — assign names to each person cluster
-4. Open `/search` — search by name or reference photo *(Phase 3)*
+1. `python cli.py index /path/to/videos` — extract faces; incremental cluster runs automatically at the end
+2. Open `/label` — assign names to each person cluster; trigger re-cluster from the UI if needed
+3. Open `/search` — search by name or reference photo *(Phase 3)*
+
+For the first run with no existing clusters, the auto-triggered incremental pass falls back to a full cluster automatically.
 
 ## Web UI
 
 | Page | Path | Description |
 |---|---|---|
-| Index | `/` | Start indexing, watch live progress |
-| Label | `/label` | Assign names to person clusters; merge duplicates |
+| Index | `/` | Start indexing, watch live progress, see previously indexed videos |
+| Label | `/label` | Assign names to person clusters; merge duplicates; trigger clustering |
 | Search | `/search` | Search by name or reference photo *(Phase 3)* |
+
+The Label page includes a **Clustering** panel with two actions:
+
+- **Cluster Unlabeled Faces** — incremental pass; safe to run at any time, labels preserved
+- **Full Re-cluster** — restructures everything from scratch; existing labels are erased
+
+Both accept eps and min-samples inputs with inline descriptions.
 
 ## API
 
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/index` | Start indexing a directory |
-| `GET` | `/api/index/status` | Indexing progress (polls every 2 s from the UI) |
+| `GET` | `/api/index/status` | Indexing progress |
 | `GET` | `/api/persons` | List all person clusters with face counts |
 | `POST` | `/api/persons/{id}/label` | Save a name for a person |
 | `POST` | `/api/persons/merge` | Merge two person clusters into one |
+| `POST` | `/api/cluster` | Start a cluster job (`incremental`, `eps`, `min_samples`) |
+| `GET` | `/api/cluster/status` | Cluster job progress |
 
 ## Project structure
 
@@ -115,9 +131,10 @@ multimedia-library-search/
 │   ├── database.py          # SQLite (videos, persons tables)
 │   ├── chroma.py            # ChromaDB face embeddings store
 │   ├── indexer.py           # Frame extraction + InsightFace pipeline
-│   ├── clusterer.py         # DBSCAN face clustering
+│   ├── clusterer.py         # Full DBSCAN + incremental clusterer
 │   └── api/
 │       ├── index.py         # POST /api/index, GET /api/index/status
+│       ├── cluster.py       # POST /api/cluster, GET /api/cluster/status
 │       └── persons.py       # GET/POST /api/persons — label + merge
 └── templates/               # Jinja2 HTML templates
     ├── base.html
@@ -141,5 +158,6 @@ All indexed data lives in `data/` and `static/thumbnails/`. Delete those directo
 
 - [x] Phase 1 — Indexing pipeline + CLI
 - [x] Phase 2 — Face clustering + labeling UI
+- [x] Phase 2.5 — Progressive incremental clustering
 - [ ] Phase 3 — Search by name or reference photo
 - [ ] Phase 4 — Highlight reel compilation

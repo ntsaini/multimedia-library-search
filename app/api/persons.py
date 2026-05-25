@@ -1,3 +1,6 @@
+import json
+
+import numpy as np
 from fastapi import APIRouter, Form
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -45,14 +48,30 @@ def merge_persons(req: MergeRequest):
             )
 
     conn = get_connection()
-    source_row = conn.execute(
-        "SELECT face_count FROM persons WHERE id = ?", (req.source_id,)
-    ).fetchone()
-    if source_row:
+    rows = conn.execute(
+        "SELECT id, face_count, centroid FROM persons WHERE id IN (?, ?)",
+        (req.source_id, req.target_id),
+    ).fetchall()
+    by_id = {r["id"]: r for r in rows}
+
+    src = by_id.get(req.source_id)
+    tgt = by_id.get(req.target_id)
+
+    if src and tgt:
+        n_s, n_t = src["face_count"], tgt["face_count"]
+        merged_centroid = None
+        if src["centroid"] and tgt["centroid"]:
+            c_s = np.array(json.loads(src["centroid"]), dtype=np.float32)
+            c_t = np.array(json.loads(tgt["centroid"]), dtype=np.float32)
+            merged = (c_t * n_t + c_s * n_s) / (n_t + n_s)
+            norm = np.linalg.norm(merged)
+            merged_centroid = json.dumps((merged / norm if norm > 0 else merged).tolist())
+
         conn.execute(
-            "UPDATE persons SET face_count = face_count + ? WHERE id = ?",
-            (source_row["face_count"], req.target_id),
+            "UPDATE persons SET face_count = ?, centroid = ? WHERE id = ?",
+            (n_t + n_s, merged_centroid, req.target_id),
         )
+
     conn.execute("DELETE FROM persons WHERE id = ?", (req.source_id,))
     conn.commit()
     conn.close()

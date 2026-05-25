@@ -9,6 +9,7 @@ from app.database import init_db, get_connection
 from app.chroma import get_collection
 from app.api import index as index_api
 from app.api import persons as persons_api
+from app.api import cluster as cluster_api
 
 
 @asynccontextmanager
@@ -26,6 +27,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 app.include_router(index_api.router)
 app.include_router(persons_api.router)
+app.include_router(cluster_api.router)
 
 
 @app.get("/")

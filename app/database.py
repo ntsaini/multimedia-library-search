@@ -29,10 +29,11 @@ def init_db() -> None:
             created_at     TEXT DEFAULT (datetime('now'))
         );
     """)
-    # Migrate existing installations that pre-date the samples column
-    try:
-        conn.execute("ALTER TABLE persons ADD COLUMN samples TEXT")
-    except Exception:
-        pass  # column already exists
+    # Migrate existing installations that pre-date these columns
+    for col_def in ("samples TEXT", "centroid TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE persons ADD COLUMN {col_def}")
+        except Exception:
+            pass  # column already exists
     conn.commit()
     conn.close()

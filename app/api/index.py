@@ -10,6 +10,8 @@ router = APIRouter()
 class IndexRequest(BaseModel):
     directory_path: str
     interval_sec: float = 1.0
+    auto_cluster: bool = True
+    eps: float = 0.6
 
 
 @router.post("/api/index")
@@ -18,7 +20,12 @@ def start_index(req: IndexRequest):
         return {"status": "already_running"}
     thread = threading.Thread(
         target=run_indexer,
-        args=(req.directory_path, req.interval_sec),
+        kwargs={
+            "directory": req.directory_path,
+            "interval_sec": req.interval_sec,
+            "auto_cluster": req.auto_cluster,
+            "eps": req.eps,
+        },
         daemon=True,
     )
     thread.start()

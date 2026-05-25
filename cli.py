@@ -19,17 +19,22 @@ def cmd_index(args) -> None:
         directory=args.directory,
         interval_sec=args.interval,
         use_gpu=args.gpu,
+        auto_cluster=not args.no_cluster,
+        eps=args.eps,
     )
 
 
 def cmd_cluster(args) -> None:
     from app.database import init_db
     from app.chroma import get_collection
-    from app.clusterer import run_clusterer
+    from app.clusterer import run_clusterer, run_incremental_clusterer
 
     init_db()
     get_collection()
-    run_clusterer(eps=args.eps, min_samples=args.min_samples)
+    if args.incremental:
+        run_incremental_clusterer(eps=args.eps, min_samples=args.min_samples)
+    else:
+        run_clusterer(eps=args.eps, min_samples=args.min_samples)
 
 
 def cmd_stats(args) -> None:
@@ -72,9 +77,21 @@ def main() -> None:
         "--gpu", action="store_true",
         help="Use GPU (CUDAExecutionProvider) for face inference",
     )
+    p_index.add_argument(
+        "--no-cluster", action="store_true",
+        help="Skip automatic incremental clustering after indexing",
+    )
+    p_index.add_argument(
+        "--eps", type=float, default=0.6,
+        help="DBSCAN eps passed to the auto-triggered incremental cluster (default: 0.6)",
+    )
     p_index.set_defaults(func=cmd_index)
 
     p_cluster = subs.add_parser("cluster", help="Cluster faces into person identities")
+    p_cluster.add_argument(
+        "--incremental", action="store_true",
+        help="Assign only new unlabeled faces; preserve existing persons and labels",
+    )
     p_cluster.add_argument(
         "--eps", type=float, default=0.6,
         help="DBSCAN eps in euclidean space on L2-normed embeddings (default: 0.6)",
