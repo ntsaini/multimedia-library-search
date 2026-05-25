@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Index Videos{% endblock %}
+{% block content %}
+
+<div class="card">
+    <h2>Index Videos</h2>
+    <p class="muted">Scan a local directory for video files and extract face embeddings. Supported: mp4, avi, mov, mkv.</p>
+    <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+            <label for="dir-input" style="display:block;margin-bottom:0.3rem;font-size:0.85rem;font-weight:500">Directory path</label>
+            <input type="text" id="dir-input" placeholder="/home/user/videos" style="width:100%" />
+        </div>
+        <div>
+            <label for="interval-input" style="display:block;margin-bottom:0.3rem;font-size:0.85rem;font-weight:500">Interval (s)</label>
+            <input type="number" id="interval-input" value="1.0" min="0.1" step="0.1" style="width:90px" />
+        </div>
+        <button onclick="startIndexing()">Start Indexing</button>
+    </div>
+</div>
+
+<div id="progress-panel" class="card hidden">
+    <h3>Indexing progress</h3>
+    <div class="progress-wrap"><div class="progress-bar" id="prog-bar" style="width:0%"></div></div>
+    <div id="prog-text" class="muted" style="margin-top:0.4rem">Starting…</div>
+</div>
+
+<script>
+let pollTimer = null;
+
+async function startIndexing() {
+    const dir = document.getElementById('dir-input').value.trim();
+    const interval = parseFloat(document.getElementById('interval-input').value) || 1.0;
+    if (!dir) { alert('Please enter a directory path.'); return; }
+
+    const resp = await fetch('/api/index', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({directory_path: dir, interval_sec: interval}),
+    });
+    const data = await resp.json();
+    if (data.status === 'already_running') {
+        alert('Indexing is already in progress.');
+        showPanel();
+        return;
+    }
+    showPanel();
+    schedulePoll();
+}
+
+function showPanel() {
+    document.getElementById('progress-panel').classList.remove('hidden');
+}
+
+function schedulePoll() {
+    clearInterval(pollTimer);
+    pollTimer = setInterval(pollStatus, 2000);
+    pollStatus();
+}
+
+async function pollStatus() {
+    let d;
+    try {
+        const resp = await fetch('/api/index/status');
+        d = await resp.json();
+    } catch {
+        return;
+    }
+
+    const pct = Math.round((d.progress || 0) * 100);
+    document.getElementById('prog-bar').style.width = pct + '%';
+
+    let text = '';
+    if (d.status === 'idle') {
+        text = 'Idle.';
+    } else if (d.status === 'running') {
+        text = `${d.videos_done} / ${d.videos_total} videos`;
+        if (d.current_video) text += ` &mdash; <strong>${d.current_video}</strong>`;
+        text += ` &mdash; ${(d.faces_found || 0).toLocaleString()} faces`;
+        if (d.eta_sec != null) {
+            const m = Math.floor(d.eta_sec / 60), s = Math.floor(d.eta_sec % 60);
+            text += ` &mdash; ETA ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        }
+    } else if (d.status === 'done') {
+        text = `Done &mdash; ${d.videos_done} videos indexed, ${(d.faces_found || 0).toLocaleString()} faces found. <a href="/label">Go to Label &rarr;</a>`;
+        clearInterval(pollTimer);
+    } else if (d.status === 'error') {
+        text = `<span style="color:#dc3545">Error: ${d.error}</span>`;
+        clearInterval(pollTimer);
+    }
+
+    document.getElementById('prog-text').innerHTML = text;
+}
+</script>
+
+{% endblock %}

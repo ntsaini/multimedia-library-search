@@ -219,3 +219,8 @@ __marimo__/
 
 # Temp Directory
 .temp/
+
+# Generated runtime data — created automatically on first run
+data/
+static/thumbnails/
+output/

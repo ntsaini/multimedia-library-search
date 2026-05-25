@@ -22,34 +22,34 @@
 
 ```
 multimedia-library-search/
-├── backend/
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py              # FastAPI app, mounts routes + templates
-│   │   ├── config.py            # Settings (paths, model name, thresholds)
-│   │   ├── database.py          # SQLite connection + table initialisation
-│   │   ├── chroma.py            # ChromaDB client + collection setup
-│   │   ├── indexer.py           # Frame extraction + face detection pipeline
-│   │   ├── clusterer.py         # DBSCAN clustering of face embeddings
-│   │   ├── compiler.py          # Timestamp merging + FFmpeg highlight reel
-│   │   └── api/
-│   │       ├── index.py         # POST /api/index, GET /api/index/status
-│   │       ├── persons.py       # GET/POST /api/persons — label + merge
-│   │       ├── search.py        # GET /api/search, POST /api/search/photo
-│   │       ├── compile.py       # POST /api/compile, GET /api/compile/{job_id}
-│   │       └── video.py         # GET /api/video/{video_id} (range-aware serve)
-│   ├── templates/
-│   │   ├── base.html            # Nav + shared layout
-│   │   ├── label.html           # Phase 2: person cluster labeling grid
-│   │   └── search.html          # Phase 3: search form + results
-│   ├── static/
-│   │   └── thumbnails/          # Face crop PNGs (filename = face_id)
-│   ├── data/
-│   │   ├── library.db           # SQLite file
-│   │   └── chroma/              # ChromaDB persistent storage
-│   ├── output/                  # Compiled highlight reels
-│   ├── cli.py                   # CLI entry point
-│   └── requirements.txt
+├── requirements.txt
+├── cli.py                   # CLI entry point
+├── app/
+│   ├── __init__.py
+│   ├── main.py              # FastAPI app, mounts routes + templates
+│   ├── config.py            # Settings (paths, model name, thresholds)
+│   ├── database.py          # SQLite connection + table initialisation
+│   ├── chroma.py            # ChromaDB client + collection setup
+│   ├── indexer.py           # Frame extraction + face detection pipeline
+│   ├── clusterer.py         # DBSCAN clustering of face embeddings
+│   ├── compiler.py          # Timestamp merging + FFmpeg highlight reel
+│   └── api/
+│       ├── index.py         # POST /api/index, GET /api/index/status
+│       ├── persons.py       # GET/POST /api/persons — label + merge
+│       ├── search.py        # GET /api/search, POST /api/search/photo
+│       ├── compile.py       # POST /api/compile, GET /api/compile/{job_id}
+│       └── video.py         # GET /api/video/{video_id} (range-aware serve)
+├── templates/
+│   ├── base.html            # Nav + shared layout
+│   ├── label.html           # Phase 2: person cluster labeling grid
+│   └── search.html          # Phase 3: search form + results
+└── static/                  # Served at /static
+    └── thumbnails/          # Face crop PNGs — gitignored, created at runtime
+
+# Gitignored (created automatically on first run):
+# data/          — SQLite + ChromaDB files
+# static/thumbnails/ — face crop PNGs
+# output/        — compiled highlight reels
 ```
 
 ---
@@ -444,6 +444,12 @@ Removes stale data for videos that no longer exist on disk. Scope covers all thr
 ---
 
 ## Requirements
+
+File lives at `requirements.txt` in the project root:
+
+```bash
+pip install -r requirements.txt
+```
 
 ```
 fastapi

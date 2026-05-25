@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+insightface
+onnxruntime              # CPU-only; NVIDIA GPU users: replace with onnxruntime-gpu
+chromadb
+opencv-python-headless
+numpy
+scikit-learn
+tqdm
