@@ -121,6 +121,48 @@ def _extract_frames(cap: cv2.VideoCapture, interval_sec: float):
         frame_idx += 1
 
 
+def prune_stale_videos() -> int:
+    """Remove indexed data for videos no longer on disk. Returns number of videos pruned."""
+    from app.chroma import get_collection
+    from app.config import THUMBNAILS_DIR
+
+    db = get_connection()
+    rows = db.execute("SELECT id, path, filename FROM videos").fetchall()
+    stale = [r for r in rows if not Path(r["path"]).exists()]
+
+    if not stale:
+        db.close()
+        return 0
+
+    collection = get_collection()
+    for row in stale:
+        result = collection.get(
+            where={"video_id": {"$eq": row["id"]}},
+            include=["metadatas"],
+        )
+        face_ids = result.get("ids") or []
+        for meta in (result.get("metadatas") or []):
+            thumb = meta.get("thumbnail_path")
+            if thumb:
+                p = THUMBNAILS_DIR / Path(thumb).name
+                if p.exists():
+                    p.unlink()
+        if face_ids:
+            collection.delete(ids=face_ids)
+        db.execute("DELETE FROM videos WHERE id = ?", (row["id"],))
+
+    db.commit()
+
+    person_rows = db.execute("SELECT id FROM persons").fetchall()
+    for p in person_rows:
+        if not collection.get(where={"person_id": {"$eq": p["id"]}}, include=[])["ids"]:
+            db.execute("DELETE FROM persons WHERE id = ?", (p["id"],))
+
+    db.commit()
+    db.close()
+    return len(stale)
+
+
 def run_indexer(
     directory: str,
     interval_sec: float = 1.0,
@@ -142,6 +184,10 @@ def run_indexer(
     })
 
     try:
+        pruned = prune_stale_videos()
+        if pruned:
+            print(f"Pruned {pruned} stale video(s) no longer on disk.")
+
         fa = _init_face_analysis(use_gpu=use_gpu)
         collection = get_collection()
         db = get_connection()

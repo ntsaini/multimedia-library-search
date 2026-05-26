@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS videos (
     path         TEXT UNIQUE NOT NULL,
     filename     TEXT NOT NULL,
     duration_sec REAL,
+    recorded_at  TEXT,                 -- ISO 8601; from ffprobe, filename, or mtime
     indexed_at   TEXT DEFAULT (datetime('now'))
 );
 
@@ -75,6 +76,8 @@ CREATE TABLE IF NOT EXISTS persons (
     created_at     TEXT DEFAULT (datetime('now'))
 );
 ```
+
+`recorded_at` is populated during indexing via `_extract_recording_date()` in `indexer.py`, which tries in order: ffprobe `creation_time` container tag → filename date patterns (`YYYY-MM-DD HH-MM-SS`, `YYYYMMDD_HHMMSS`) → file mtime. For existing videos indexed before this column was added, run `python cli.py backfill-dates`.
 
 ### ChromaDB — `faces` collection (cosine distance)
 
@@ -454,68 +457,83 @@ Serves the source video file from disk using `StreamingResponse` with HTTP range
 
 **Objective:** Compile all clips for a person into a single downloadable MP4.
 
-### Timestamp merging (before compilation)
+### Scene-based timestamp merging
 
-Raw search results are per-frame detections. Before cutting clips, consolidate nearby timestamps from the same video into continuous segments:
+Raw ChromaDB detections are one per indexed frame (typically 1/sec). Naively padding and concatenating each timestamp would produce a reel as long as the source videos for someone present throughout an entire recording. Instead, the compiler uses a scene-based approach:
 
 ```python
-def merge_timestamps(timestamps, padding_sec=2.0, merge_gap_sec=5.0):
-    """
-    timestamps: sorted list of floats (seconds)
-    Returns: list of (start_sec, end_sec) tuples
-    """
+def merge_timestamps(timestamps, merge_gap_sec=30.0):
+    """Group timestamps into (scene_start, scene_end) tuples separated by merge_gap_sec."""
     segments = []
-    for t in timestamps:
-        start, end = t - padding_sec, t + padding_sec
-        if segments and start <= segments[-1][1]:
-            segments[-1] = (segments[-1][0], max(segments[-1][1], end))
+    for t in sorted(timestamps):
+        if segments and t <= segments[-1][1] + merge_gap_sec:
+            segments[-1] = (segments[-1][0], t)   # extend current scene
         else:
-            segments.append((start, end))
+            segments.append((t, t))                # new scene
     return segments
 ```
 
-Example: detections at 0:10, 0:11, 0:12 with 2 sec padding and 5 sec merge gap → one clip from 0:08 to 0:14 instead of three overlapping clips.
+For each scene, a single short clip of `clip_duration_sec` is cut, centered on the scene midpoint. A 9-minute continuous-presence scene becomes one 30-second representative clip, not 9 minutes of footage.
 
-### `compiler.py` — HighlightCompiler
-
-Input: `[{video_path, start_sec, end_sec}]` (already merged)
+### `compiler.py` — `run_compile()`
 
 ```
-1. For each segment:
-   ffmpeg -ss {start} -to {end} -i {input} -c copy {tmp_clip_N}.mp4
-
-2. Write concat list:
-   file '/tmp/clip_001.mp4'
-   file '/tmp/clip_002.mp4'
-
-3. Concatenate:
-   ffmpeg -f concat -safe 0 -i concat_list.txt -c copy {output}.mp4
-
-4. Delete temp clips
+1. Fetch all face detections for person_id from ChromaDB
+2. Group by video; merge timestamps into scenes per video
+3. If scenes > max_clips_per_video, evenly sample down to the cap
+4. For each chosen scene: mid = (start+end)/2; clip = [mid-half, mid+half]
+5. ffmpeg -ss {start} -to {end} -i {input} -c copy {tmp_clip_N}.mp4
+   (fallback: re-encode with libx264 if -c copy fails)
+6. Write concat list → ffmpeg concat -c copy -movflags +faststart {output}.mp4
 ```
 
-`-c copy` is lossless and fast — no re-encoding. Output: `output/{name}_{job_id[:8]}.mp4`
+`-c copy` avoids re-encoding for speed. `-movflags +faststart` moves the MP4 index to the front for streaming. Output: `output/{safe_name}_{job_id[:8]}.mp4`.
+
+### Clip ordering
+
+Clips are ordered before concatenation by the `order` parameter:
+
+| Value | Behaviour |
+|---|---|
+| `asc` (default) | Sort by `recorded_at`, earliest first |
+| `desc` | Sort by `recorded_at`, latest first |
+| `random` | `random.shuffle()` |
+
+`recorded_at` falls back to `indexed_at` for videos where the recording date could not be determined.
 
 ### API routes (`api/compile.py`)
 
 ```
 POST /api/compile
-     body: {person_id, padding_sec=2, merge_gap_sec=5}
+     body: {
+       person_id,
+       clip_duration_sec=30,
+       merge_gap_sec=30.0,
+       max_clips_per_video=5,
+       order="asc"
+     }
      → launches background thread, returns {job_id}
 
 GET  /api/compile/{job_id}
-     → returns {status: "running"|"done"|"error", progress: 0.0–1.0, download_url}
+     → {status, progress, segments_total, segments_done, error, filename}
+
+GET  /api/compile/{job_id}/download
+     → FileResponse (video/mp4) when status == "done"
 ```
 
-Job state held in an in-memory dict — sufficient for a single-user local tool.
+Job state held in a module-level dict — sufficient for a single-user local tool.
 
 ### Web UI
 
-- "Create Highlight Reel" button on `/search` results page
-- htmx polls `GET /api/compile/{job_id}` every second; renders a progress bar
-- "Download" link appears when `status == "done"`
+The Highlight Reel panel appears on `/search` whenever named persons are in the results. It exposes all four compile parameters with plain-language labels, a clip order dropdown (Earliest first / Latest first / Random), a progress bar that polls every second, and a download link on completion.
 
-**Verification:** Search for a person who appears across multiple videos. Request a highlight reel. Confirm the downloaded MP4 contains the correct clips in chronological order, with nearby appearances merged into single continuous segments.
+### Phase 4 implementation notes (actual vs. plan)
+
+- Scene-based clipping avoids jumbo reels. A person present throughout a full video produces one short representative clip, not a copy of the whole video.
+- `max_clips_per_video` uses evenly-spaced sampling (not head/tail) so the full chronological spread of a video is represented when scenes are subsampled.
+- FFmpeg fast-seek (`-ss` before `-i`) is used for performance; `-c copy` for losslessness. A re-encode fallback (`libx264`/`aac`) handles codec or container mismatches that prevent stream copy.
+- Client-side search results mirror the scene logic: consecutive per-minute detection hits are merged into scene chips. A brief appearance shows as `1:23`; a continuous stretch shows as `0:00–5:52`. The displayed end is extended to video duration when the last detection is within 90 s of the real end (compensating for per-minute server deduplication).
+- Recording date extraction priority: ffprobe `creation_time` container tag → filename date pattern (`YYYY-MM-DD HH-MM-SS` or `YYYYMMDD_HHMMSS`) → file mtime. `python cli.py backfill-dates` populates `recorded_at` for already-indexed videos without re-indexing.
 
 ---
 
@@ -537,27 +555,33 @@ Phases 1–4 are unaffected — this is purely additive.
 ## CLI Reference
 
 ```
-python cli.py index   <directory>  [--interval 1.0] [--gpu]
-python cli.py cluster              [--eps 0.4] [--min-samples 3]
-python cli.py serve                [--host 0.0.0.0] [--port 8000]
+python cli.py index          <directory>  [--interval 1.0] [--gpu] [--no-cluster] [--eps 0.6]
+python cli.py cluster                     [--incremental] [--eps 0.6] [--min-samples 3]
+python cli.py prune                       [--dry-run]
+python cli.py trim-thumbnails             [--dry-run]
+python cli.py backfill-dates
 python cli.py stats
-python cli.py prune                [--dry-run]
+python cli.py serve                       [--host 0.0.0.0] [--port 8000]
 ```
 
 All web UI and API available at `http://localhost:8000` after `serve`.
 
-### `prune` command
+---
 
-Removes stale data for videos that no longer exist on disk. Scope covers all three stores together — a partial prune that only cleans thumbnails but leaves ChromaDB or SQLite stale would cause inconsistency:
+## Maintenance
 
-1. Load all rows from SQLite `videos` table
-2. For each row where `path` no longer exists on disk:
-   - Delete all ChromaDB face records with that `video_id`
-   - Delete all thumbnail PNGs referenced by those face records
-   - Delete the SQLite `videos` row
-   - If all faces for a `person_id` are gone, delete that person from SQLite `persons`
-3. Delete any PNG files in `static/thumbnails/` not referenced by any ChromaDB record (orphan cleanup)
-4. `--dry-run` prints what would be deleted without making changes
+### Automatic pipeline integration
+
+| Step | Triggered by | What it does |
+|---|---|---|
+| `prune_stale_videos()` | Start of `index` | Removes SQLite rows, ChromaDB face records, and thumbnail files for videos deleted from disk; also removes persons whose last faces are gone |
+| `trim_thumbnails()` | End of `cluster` (full and incremental) | Deletes all face thumbnail PNGs not referenced as a person's representative thumbnail or sample; keeps at most 5 per person |
+
+Both are also available as manual CLI commands (`prune`, `trim-thumbnails`) with a `--dry-run` flag for safe previewing.
+
+### Thumbnail lifecycle
+
+Each detected face gets a 128×128 PNG crop saved to `static/thumbnails/` at index time. After clustering, only 1 representative thumbnail + up to 4 sample thumbnails per person are needed (used by the `/label` UI). Everything else is redundant — `trim_thumbnails()` removes them automatically after each cluster run, keeping the directory small regardless of library size.
 
 ---
 

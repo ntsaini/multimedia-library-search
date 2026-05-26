@@ -1,6 +1,7 @@
 import argparse
 import shutil
 import sys
+from pathlib import Path
 
 
 def check_dependencies() -> None:
@@ -54,6 +55,66 @@ def cmd_stats(args) -> None:
     print(f"Videos:  {videos}")
     print(f"Faces:   {faces:,}")
     print(f"Persons: {persons} ({labeled} labeled)")
+
+
+def cmd_prune(args) -> None:
+    from pathlib import Path
+    from app.database import init_db, get_connection
+    from app.chroma import get_collection
+    from app.indexer import prune_stale_videos
+
+    init_db()
+
+    if args.dry_run:
+        db = get_connection()
+        collection = get_collection()
+        rows = db.execute("SELECT path, filename FROM videos").fetchall()
+        stale = [r for r in rows if not Path(r["path"]).exists()]
+        db.close()
+        if not stale:
+            print("No stale videos found.")
+        else:
+            print(f"Would remove {len(stale)} stale video(s):")
+            for r in stale:
+                print(f"  {r['filename']}")
+        return
+
+    pruned = prune_stale_videos()
+    if pruned:
+        print(f"Removed {pruned} stale video(s) and their associated data.")
+    else:
+        print("No stale videos found — nothing to do.")
+
+
+def cmd_trim_thumbnails(args) -> None:
+    from app.database import init_db, get_connection
+    from app.config import THUMBNAILS_DIR
+    from app.clusterer import trim_thumbnails
+    import json
+
+    init_db()
+
+    if args.dry_run:
+        db = get_connection()
+        rows = db.execute("SELECT thumbnail_path, samples FROM persons").fetchall()
+        db.close()
+        keep = set()
+        for row in rows:
+            if row["thumbnail_path"]:
+                keep.add(Path(row["thumbnail_path"]).name)
+            for p in json.loads(row["samples"] or "[]"):
+                if p:
+                    keep.add(Path(p).name)
+        to_delete = [p for p in THUMBNAILS_DIR.glob("*.png") if p.name not in keep]
+        freed = sum(p.stat().st_size for p in to_delete)
+        print(f"Would delete {len(to_delete):,} thumbnail(s) ({freed / 1024 / 1024:.1f} MB), keeping {len(keep)}.")
+        return
+
+    deleted = trim_thumbnails()
+    if deleted:
+        print(f"Trimmed {deleted:,} redundant thumbnail(s).")
+    else:
+        print("Nothing to trim — thumbnail directory is already minimal.")
 
 
 def cmd_backfill_dates(args) -> None:
@@ -138,6 +199,26 @@ def main() -> None:
 
     p_stats = subs.add_parser("stats", help="Show library statistics")
     p_stats.set_defaults(func=cmd_stats)
+
+    p_prune = subs.add_parser(
+        "prune",
+        help="Remove stale data for videos deleted from disk",
+    )
+    p_prune.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be removed without making changes",
+    )
+    p_prune.set_defaults(func=cmd_prune)
+
+    p_trim = subs.add_parser(
+        "trim-thumbnails",
+        help="Delete redundant face thumbnails, keeping only label-page samples",
+    )
+    p_trim.add_argument(
+        "--dry-run", action="store_true",
+        help="Show how many thumbnails would be deleted without deleting them",
+    )
+    p_trim.set_defaults(func=cmd_trim_thumbnails)
 
     p_bd = subs.add_parser(
         "backfill-dates",

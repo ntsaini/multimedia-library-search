@@ -60,6 +60,31 @@ def _bulk_update_chroma(collection, ids, metadatas, batch_size=500):
         )
 
 
+def trim_thumbnails() -> int:
+    """Delete face thumbnails not referenced as person samples. Returns count deleted."""
+    from pathlib import Path
+    from app.config import THUMBNAILS_DIR
+
+    conn = get_connection()
+    rows = conn.execute("SELECT thumbnail_path, samples FROM persons").fetchall()
+    conn.close()
+
+    keep = set()
+    for row in rows:
+        if row["thumbnail_path"]:
+            keep.add(Path(row["thumbnail_path"]).name)
+        for path in json.loads(row["samples"] or "[]"):
+            if path:
+                keep.add(Path(path).name)
+
+    deleted = 0
+    for png in THUMBNAILS_DIR.glob("*.png"):
+        if png.name not in keep:
+            png.unlink()
+            deleted += 1
+    return deleted
+
+
 def run_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
     collection = get_collection()
 
@@ -111,7 +136,8 @@ def run_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
 
     _bulk_update_chroma(collection, ids, updated_metas)
 
-    print(f"\nDone. {len(cluster_labels)} persons | {noise_count} faces unlabeled.")
+    trimmed = trim_thumbnails()
+    print(f"\nDone. {len(cluster_labels)} persons | {noise_count} faces unlabeled | {trimmed:,} thumbnails trimmed.")
     return {"clusters": len(cluster_labels), "noise": noise_count}
 
 
@@ -232,5 +258,6 @@ def run_incremental_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
         else:
             noise_count = len(unmatched)
 
-    print(f"\nDone. {assigned_count} assigned | {new_clusters} new persons | {noise_count} noise.")
+    trimmed = trim_thumbnails()
+    print(f"\nDone. {assigned_count} assigned | {new_clusters} new persons | {noise_count} noise | {trimmed:,} thumbnails trimmed.")
     return {"assigned": assigned_count, "new_clusters": new_clusters, "noise": noise_count}
