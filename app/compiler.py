@@ -38,6 +38,7 @@ def run_compile(
     clip_duration_sec: float,
     merge_gap_sec: float,
     max_clips_per_video: int,
+    order: str = "asc",
 ) -> None:
     """Runs in a background thread; mutates _jobs[job_id] throughout."""
     job = _jobs[job_id]
@@ -63,14 +64,22 @@ def run_compile(
         vid_ids = list(video_ts.keys())
         ph = ",".join("?" * len(vid_ids))
         rows = conn.execute(
-            f"SELECT id, path, duration_sec FROM videos WHERE id IN ({ph})", vid_ids
+            f"SELECT id, path, duration_sec, recorded_at, indexed_at"
+            f" FROM videos WHERE id IN ({ph})", vid_ids
         ).fetchall()
         person_row = conn.execute(
             "SELECT name FROM persons WHERE id = ?", (person_id,)
         ).fetchone()
         conn.close()
 
-        video_info = {r["id"]: (r["path"], r["duration_sec"]) for r in rows}
+        video_info = {
+            r["id"]: {
+                "path": r["path"],
+                "duration_sec": r["duration_sec"],
+                "sort_key": r["recorded_at"] or r["indexed_at"] or "",
+            }
+            for r in rows
+        }
         raw_name = person_row["name"] if (person_row and person_row["name"]) else "unknown"
         safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_name)
 
@@ -87,8 +96,9 @@ def run_compile(
         for vid_id, timestamps in video_ts.items():
             if vid_id not in video_info:
                 continue
-            path, duration = video_info[vid_id]
-            cap = float(duration or 1e9)
+            info = video_info[vid_id]
+            path = info["path"]
+            cap = float(info["duration_sec"] or 1e9)
 
             scenes = merge_timestamps(timestamps, merge_gap_sec)
 
@@ -108,10 +118,16 @@ def run_compile(
                         "start": start,
                         "end": end,
                         "vid_id": vid_id,
+                        "sort_key": info["sort_key"],
                     })
 
-        # Sort chronologically: by video, then by start time within video
-        segments.sort(key=lambda s: (s["vid_id"], s["start"]))
+        if order == "desc":
+            segments.sort(key=lambda s: (s["sort_key"], s["start"]), reverse=True)
+        elif order == "random":
+            import random
+            random.shuffle(segments)
+        else:  # "asc" / default
+            segments.sort(key=lambda s: (s["sort_key"], s["start"]))
 
         if not segments:
             job.update({"status": "error", "error": "No segments to compile"})

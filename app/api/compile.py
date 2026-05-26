@@ -16,6 +16,7 @@ class CompileRequest(BaseModel):
     clip_duration_sec: int = 30
     merge_gap_sec: float = 30.0
     max_clips_per_video: int = 5
+    order: str = "asc"
 
 
 @router.post("/api/compile")
@@ -38,6 +39,7 @@ def start_compile(req: CompileRequest):
             float(req.clip_duration_sec),
             req.merge_gap_sec,
             req.max_clips_per_video,
+            req.order,
         ),
         daemon=True,
     ).start()

@@ -56,6 +56,40 @@ def cmd_stats(args) -> None:
     print(f"Persons: {persons} ({labeled} labeled)")
 
 
+def cmd_backfill_dates(args) -> None:
+    from pathlib import Path
+    from app.database import init_db, get_connection
+    from app.indexer import _extract_recording_date
+
+    init_db()
+    db = get_connection()
+    rows = db.execute(
+        "SELECT id, path, filename FROM videos WHERE recorded_at IS NULL"
+    ).fetchall()
+
+    if not rows:
+        print("All videos already have a recorded_at date — nothing to do.")
+        db.close()
+        return
+
+    print(f"Backfilling dates for {len(rows)} video(s)…")
+    updated = 0
+    for row in rows:
+        path = Path(row["path"])
+        date = _extract_recording_date(path)
+        db.execute(
+            "UPDATE videos SET recorded_at = ? WHERE id = ?", (date, row["id"])
+        )
+        status = date or "NULL"
+        print(f"  {row['filename']}: {status}")
+        if date:
+            updated += 1
+
+    db.commit()
+    db.close()
+    print(f"\nDone. {updated}/{len(rows)} video(s) updated.")
+
+
 def cmd_serve(args) -> None:
     import uvicorn
     uvicorn.run("app.main:app", host=args.host, port=args.port, reload=False)
@@ -104,6 +138,12 @@ def main() -> None:
 
     p_stats = subs.add_parser("stats", help="Show library statistics")
     p_stats.set_defaults(func=cmd_stats)
+
+    p_bd = subs.add_parser(
+        "backfill-dates",
+        help="Populate recorded_at for already-indexed videos (one-time, no re-indexing)",
+    )
+    p_bd.set_defaults(func=cmd_backfill_dates)
 
     p_serve = subs.add_parser("serve", help="Start the web UI server")
     p_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")

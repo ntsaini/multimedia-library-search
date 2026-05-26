@@ -35,5 +35,9 @@ def init_db() -> None:
             conn.execute(f"ALTER TABLE persons ADD COLUMN {col_def}")
         except Exception:
             pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN recorded_at TEXT")
+    except Exception:
+        pass  # column already exists
     conn.commit()
     conn.close()

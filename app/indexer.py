@@ -1,7 +1,10 @@
+import json
+import subprocess
 import time
 import re
 import cv2
 import numpy as np
+from datetime import datetime
 from pathlib import Path
 from tqdm import tqdm
 from insightface.app import FaceAnalysis
@@ -38,6 +41,53 @@ def _init_face_analysis(use_gpu: bool) -> FaceAnalysis:
     fa = FaceAnalysis(name=MODEL_NAME_DEFAULT, providers=providers)
     fa.prepare(ctx_id=0, det_size=FACE_DET_SIZE)
     return fa
+
+
+def _extract_recording_date(path: Path) -> str | None:
+    """Return ISO 8601 recording date, trying ffprobe → filename → mtime."""
+    # 1. ffprobe container tag
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-print_format", "json",
+                "-show_entries", "format_tags=creation_time",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        if r.returncode == 0:
+            ct = (json.loads(r.stdout or b"{}")
+                  .get("format", {}).get("tags", {}).get("creation_time"))
+            if ct:
+                dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+                return dt.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+    except Exception:
+        pass
+
+    # 2. Filename patterns
+    name = path.stem
+    # YYYY-MM-DD HH-MM-SS  /  YYYY-MM-DD_HH-MM-SS  /  YYYY-MM-DDTHH:MM:SS
+    m = re.search(r'(\d{4})-(\d{2})-(\d{2})[ _T](\d{2})[-:.](\d{2})[-:.](\d{2})', name)
+    if m:
+        try:
+            return datetime(*map(int, m.groups())).isoformat(timespec="seconds")
+        except ValueError:
+            pass
+    # YYYYMMDD_HHMMSS  /  YYYYMMDD-HHMMSS  (Android / GoPro style)
+    m = re.search(r'(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})', name)
+    if m:
+        try:
+            return datetime(*map(int, m.groups())).isoformat(timespec="seconds")
+        except ValueError:
+            pass
+
+    # 3. File mtime
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    except Exception:
+        return None
 
 
 def _safe_id(text: str) -> str:
@@ -164,9 +214,11 @@ def run_indexer(
                 cap.release()
 
                 # Insert video row and patch video_id into collected metadatas
+                recorded_at = _extract_recording_date(video_path)
                 cursor = db.execute(
-                    "INSERT INTO videos (path, filename, duration_sec) VALUES (?, ?, ?)",
-                    (str(video_path), video_path.name, duration_sec),
+                    "INSERT INTO videos (path, filename, duration_sec, recorded_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    (str(video_path), video_path.name, duration_sec, recorded_at),
                 )
                 db.commit()
                 video_id = cursor.lastrowid

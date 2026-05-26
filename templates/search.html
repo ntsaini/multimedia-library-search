@@ -256,6 +256,15 @@
           <input type="number" id="c-max" value="5" min="1" step="1" style="width:72px">
         </div>
         <div style="align-self:flex-end;padding-bottom:2px">
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.15rem">Clip order</label>
+          <p class="muted" style="font-size:0.72rem;margin:0 0 0.3rem;max-width:160px">How clips are arranged in the final reel.</p>
+          <select id="c-order" style="width:140px">
+            <option value="asc">Earliest first</option>
+            <option value="desc">Latest first</option>
+            <option value="random">Random</option>
+          </select>
+        </div>
+        <div style="align-self:flex-end;padding-bottom:2px">
           <div id="compile-btns"></div>
         </div>
       </div>
@@ -467,9 +476,10 @@
   window.startCompile = async function (personId, personName) {
     if (_compileTimer) clearInterval(_compileTimer);
 
-    const clip = parseInt(document.getElementById('c-clip').value) || 30;
-    const gap  = parseFloat(document.getElementById('c-gap').value)  || 30;
-    const max  = parseInt(document.getElementById('c-max').value)   || 5;
+    const clip  = parseInt(document.getElementById('c-clip').value)  || 30;
+    const gap   = parseFloat(document.getElementById('c-gap').value) || 30;
+    const max   = parseInt(document.getElementById('c-max').value)   || 5;
+    const order = document.getElementById('c-order').value;
     const prog = document.getElementById('compile-progress');
 
     prog.innerHTML =
@@ -488,6 +498,7 @@
           clip_duration_sec: clip,
           merge_gap_sec: gap,
           max_clips_per_video: max,
+          order: order,
         }),
       });
     } catch {
