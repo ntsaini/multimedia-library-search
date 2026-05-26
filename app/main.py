@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import json
-from app.config import BASE_DIR, THUMBNAILS_DIR
+from app.config import BASE_DIR, OUTPUT_DIR, THUMBNAILS_DIR
 from app.database import init_db, get_connection
 from app.chroma import get_collection
 from app.api import index as index_api
@@ -12,11 +12,13 @@ from app.api import persons as persons_api
 from app.api import cluster as cluster_api
 from app.api import search as search_api
 from app.api import video as video_api
+from app.api import compile as compile_api
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     get_collection()
     yield
@@ -32,6 +34,7 @@ app.include_router(persons_api.router)
 app.include_router(cluster_api.router)
 app.include_router(search_api.router)
 app.include_router(video_api.router)
+app.include_router(compile_api.router)
 
 
 @app.get("/")

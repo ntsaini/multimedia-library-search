@@ -26,9 +26,9 @@ def _fetch_video_map(conn, video_ids: list) -> dict:
         return {}
     placeholders = ",".join("?" * len(video_ids))
     rows = conn.execute(
-        f"SELECT id, filename FROM videos WHERE id IN ({placeholders})", video_ids
+        f"SELECT id, filename, duration_sec FROM videos WHERE id IN ({placeholders})", video_ids
     ).fetchall()
-    return {r["id"]: r["filename"] for r in rows}
+    return {r["id"]: {"filename": r["filename"], "duration_sec": r["duration_sec"]} for r in rows}
 
 
 def _dedup_by_minute(hits: list) -> list:
@@ -79,13 +79,16 @@ def search_by_name(name: str = ""):
 
         for meta in result["metadatas"]:
             vid_id = meta.get("video_id")
+            vinfo = video_map.get(vid_id) or {}
             hits.append(
                 {
                     "video_id": vid_id,
-                    "filename": video_map.get(vid_id, "unknown"),
+                    "filename": vinfo.get("filename", "unknown"),
+                    "duration_sec": vinfo.get("duration_sec"),
                     "timestamp_sec": meta.get("timestamp_sec"),
                     "thumbnail_path": meta.get("thumbnail_path"),
                     "person_name": person_name,
+                    "person_id": person_id,
                 }
             )
 
@@ -142,14 +145,17 @@ async def search_by_photo(file: UploadFile = File(...)):
             continue
         vid_id = meta.get("video_id")
         person_id = meta.get("person_id", "unlabeled")
+        vinfo = video_map.get(vid_id) or {}
         hits.append(
             {
                 "video_id": vid_id,
-                "filename": video_map.get(vid_id, "unknown"),
+                "filename": vinfo.get("filename", "unknown"),
+                "duration_sec": vinfo.get("duration_sec"),
                 "timestamp_sec": meta.get("timestamp_sec"),
                 "thumbnail_path": meta.get("thumbnail_path"),
                 "distance": round(float(dist), 3),
                 "person_name": person_map.get(person_id),
+                "person_id": person_id if person_id != "unlabeled" else None,
             }
         )
 

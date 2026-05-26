@@ -231,6 +231,37 @@
 <div id="results-section" class="hidden">
   <div class="card">
     <h2 id="results-header"></h2>
+
+    <!-- Highlight reel panel — shown when named persons are in results -->
+    <div id="compile-section" class="hidden"
+         style="margin-bottom:1.1rem;padding-bottom:1.1rem;border-bottom:1px solid #e9ecef">
+      <h3 style="margin:0 0 0.3rem">Highlight Reel</h3>
+      <p class="muted" style="margin:0 0 0.75rem">
+        Compile all appearances into a single downloadable MP4 using FFmpeg.
+      </p>
+      <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap;margin-bottom:0.75rem">
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.15rem">Clip length (sec)</label>
+          <p class="muted" style="font-size:0.72rem;margin:0 0 0.3rem;max-width:160px">Duration of each snippet, centered on the detected scene.</p>
+          <input type="number" id="c-clip" value="30" min="5" step="5" style="width:72px">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.15rem">Scene gap (sec)</label>
+          <p class="muted" style="font-size:0.72rem;margin:0 0 0.3rem;max-width:160px">Detections closer than this are merged into one scene, producing one clip.</p>
+          <input type="number" id="c-gap" value="30" min="0" step="5" style="width:72px">
+        </div>
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.15rem">Max clips per video</label>
+          <p class="muted" style="font-size:0.72rem;margin:0 0 0.3rem;max-width:160px">Cap on scenes taken from a single video, so one long video doesn't dominate.</p>
+          <input type="number" id="c-max" value="5" min="1" step="1" style="width:72px">
+        </div>
+        <div style="align-self:flex-end;padding-bottom:2px">
+          <div id="compile-btns"></div>
+        </div>
+      </div>
+      <div id="compile-progress"></div>
+    </div>
+
     <div id="results-list"></div>
   </div>
 </div>
@@ -282,6 +313,7 @@
         map.set(item.video_id, {
           video_id:    item.video_id,
           filename:    item.filename,
+          duration_sec: item.duration_sec || null,
           person_name: item.person_name,
           hits:        [],
         });
@@ -308,6 +340,23 @@
     return Array.from({length: n}, (_, i) => hits[Math.round(i * step)]);
   }
 
+  /* Merge consecutive hits (sorted by time) into scenes separated by gapSec */
+  function mergeHitsToSegments(hits, gapSec) {
+    if (gapSec == null) gapSec = 90;
+    const sorted = [...hits].sort((a, b) => (a.timestamp_sec || 0) - (b.timestamp_sec || 0));
+    const segs = [];
+    for (const h of sorted) {
+      const t = h.timestamp_sec || 0;
+      if (segs.length && t <= segs[segs.length - 1].end + gapSec) {
+        segs[segs.length - 1].end = t;
+        segs[segs.length - 1].hits.push(h);
+      } else {
+        segs.push({ start: t, end: t, hits: [h] });
+      }
+    }
+    return segs;
+  }
+
   /* ── Render ── */
   let _groups = [];   // kept so playVideo can find all timestamps for a video
 
@@ -328,20 +377,26 @@
 
     _groups = groupByVideo(items, isPhoto);
 
+    // Count total scenes across all videos for the header
+    let totalScenes = 0;
+    _groups.forEach(g => { totalScenes += mergeHitsToSegments(g.hits).length; });
+
     document.getElementById('results-header').textContent =
       label + ' — ' + _groups.length + ' video' + (_groups.length !== 1 ? 's' : '') +
-      ', ' + items.length + ' appearance' + (items.length !== 1 ? 's' : '');
+      ', ' + totalScenes + ' scene' + (totalScenes !== 1 ? 's' : '');
 
     const html = _groups.map(function (g) {
-      // 3 evenly-spaced video frames
+      const segs = mergeHitsToSegments(g.hits);
+
+      // 3 evenly-spaced video frames (sampled across all raw hits)
       const sample = sampleHits(g.hits, 3);
       const frames = sample.map(h =>
         '<img src="/api/frame/' + g.video_id + '?t=' + Math.floor(h.timestamp_sec || 0) + '"' +
         ' alt="" onerror="this.style.display=\'none\'">'
       ).join('');
 
-      // Meta line
-      let meta = g.hits.length + ' appearance' + (g.hits.length !== 1 ? 's' : '');
+      // Meta line — show scene count rather than raw detection count
+      let meta = segs.length + ' scene' + (segs.length !== 1 ? 's' : '');
       if (g.person_name) {
         meta += ' · ' + esc(g.person_name);
       } else if (isPhoto) {
@@ -349,14 +404,23 @@
         meta += ' · best match ' + Math.round((1 - best) * 100) + '%';
       }
 
-      // Timestamp chips — each opens the video at that moment
-      const chips = g.hits.map(h =>
-        '<button class="chip"' +
-        ' data-vid="' + g.video_id + '"' +
-        ' data-ts="'  + (h.timestamp_sec || 0) + '"' +
-        ' data-fn="'  + esc(g.filename) + '"' +
-        ' onclick="playChip(this)">' + fmtTime(h.timestamp_sec) + '</button>'
-      ).join('');
+      // One chip per scene; shows a range like "0:00–9:12" for long scenes
+      const chips = segs.map(seg => {
+        // Extend displayed end to video duration when detection ends near the real end
+        // (server dedup means last timestamp is ~1 min before actual video end)
+        let displayEnd = seg.end;
+        if (g.duration_sec && g.duration_sec - seg.end < 90) {
+          displayEnd = g.duration_sec;
+        }
+        const label = displayEnd > seg.start
+          ? fmtTime(seg.start) + '–' + fmtTime(displayEnd)
+          : fmtTime(seg.start);
+        return '<button class="chip"' +
+          ' data-vid="' + g.video_id + '"' +
+          ' data-ts="'  + seg.start + '"' +
+          ' data-fn="'  + esc(g.filename) + '"' +
+          ' onclick="playChip(this)">' + label + '</button>';
+      }).join('');
 
       return '<div class="result-row card">' +
         '<div class="frame-strip">' + frames + '</div>' +
@@ -367,7 +431,105 @@
     }).join('');
 
     document.getElementById('results-list').innerHTML = '<div class="result-list">' + html + '</div>';
+
+    // Populate the compile panel with unique named persons from this result set
+    const persons = new Map(); // person_id → person_name
+    for (const item of items) {
+      if (item.person_id && item.person_name) persons.set(item.person_id, item.person_name);
+    }
+    _updateCompileSection(persons);
   }
+
+  /* ── Highlight reel ── */
+  function _updateCompileSection(persons) {
+    const section  = document.getElementById('compile-section');
+    const btnsDiv  = document.getElementById('compile-btns');
+    const progress = document.getElementById('compile-progress');
+
+    progress.innerHTML = '';  // reset any previous job UI
+
+    if (persons.size === 0) {
+      section.classList.add('hidden');
+      return;
+    }
+
+    section.classList.remove('hidden');
+    const single = persons.size === 1;
+    btnsDiv.innerHTML = [...persons.entries()].map(([pid, pname]) =>
+      '<button onclick="startCompile(\'' + pid + '\',\'' + esc(pname) + '\')">' +
+      (single ? '&#9654; Create Highlight Reel' : '&#9654; ' + esc(pname) + '\'s Reel') +
+      '</button>'
+    ).join(' ');
+  }
+
+  let _compileTimer = null;
+
+  window.startCompile = async function (personId, personName) {
+    if (_compileTimer) clearInterval(_compileTimer);
+
+    const clip = parseInt(document.getElementById('c-clip').value) || 30;
+    const gap  = parseFloat(document.getElementById('c-gap').value)  || 30;
+    const max  = parseInt(document.getElementById('c-max').value)   || 5;
+    const prog = document.getElementById('compile-progress');
+
+    prog.innerHTML =
+      '<div class="progress-wrap" style="margin-top:0.5rem">' +
+        '<div class="progress-bar" id="c-bar" style="width:0%"></div>' +
+      '</div>' +
+      '<p class="muted" id="c-msg" style="margin:0.3rem 0 0">Starting…</p>';
+
+    let resp;
+    try {
+      resp = await fetch('/api/compile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          person_id: personId,
+          clip_duration_sec: clip,
+          merge_gap_sec: gap,
+          max_clips_per_video: max,
+        }),
+      });
+    } catch {
+      document.getElementById('c-msg').textContent = 'Request failed.';
+      return;
+    }
+
+    if (!resp.ok) {
+      document.getElementById('c-msg').textContent = 'Server error starting compilation.';
+      return;
+    }
+
+    const { job_id } = await resp.json();
+
+    _compileTimer = setInterval(async function () {
+      let job;
+      try { job = await (await fetch('/api/compile/' + job_id)).json(); } catch { return; }
+
+      const bar = document.getElementById('c-bar');
+      const msg = document.getElementById('c-msg');
+      if (!bar || !msg) { clearInterval(_compileTimer); return; }
+
+      bar.style.width = Math.round((job.progress || 0) * 100) + '%';
+
+      if (job.status === 'done') {
+        clearInterval(_compileTimer);
+        bar.style.width = '100%';
+        msg.innerHTML =
+          '<a href="/api/compile/' + job_id + '/download" download="' + esc(personName) + '_reel.mp4">' +
+          '&#11015; Download ' + esc(personName) + ' reel</a>';
+      } else if (job.status === 'error') {
+        clearInterval(_compileTimer);
+        msg.textContent = 'Error: ' + (job.error || 'unknown');
+      } else {
+        const done  = job.segments_done  || 0;
+        const total = job.segments_total || 0;
+        msg.textContent = total > 0
+          ? 'Cutting clip ' + done + ' of ' + total + '…'
+          : 'Preparing…';
+      }
+    }, 1000);
+  };
 
   /* ── Search handlers ── */
   document.getElementById('name-form').addEventListener('submit', async function (e) {
