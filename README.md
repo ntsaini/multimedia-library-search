@@ -35,6 +35,76 @@ index → (auto-cluster) → label → search → compile
 
 For the first run with no existing clusters, the auto-triggered incremental pass falls back to a full cluster automatically.
 
+### Pipeline
+
+```mermaid
+flowchart TD
+    subVID["Video Directory"]
+    subCLI["CLI Entry Point\nclass cli"]
+
+    subWEB["Web UI (htmx + Jinja2)"]
+    subPAGE_LABEL["/label\nAssign names\nMerge duplicates"]
+    subPAGE_SEARCH["/search\nname | photo search"]
+    
+    subEXTRACT["indexer.py\nKeyframe extraction (OpenCV)"]
+    subDETECT["Face detection (InsightFace / ONNX)"]
+    subEMBED["Embedding generation"]
+    
+    subCHROMA["chroma.py\nChromaDB PersistentClient\n'faces' collection (cosine)"]
+    subSQLI["database.py\nSQLite: videos + frames tables"]
+    
+    subCLUS["clusterer.py\nFull DBSCAN or incremental\nCentroid-based assignment"]
+    subCOMPILE["compiler.py\nScene merging →\nFFmpeg extraction →\nconcat → MP4"]
+    
+    subPERSONS["SQLite: persons table\n(name + centroid)"]
+    subRESULT["Output/\nhighlight reel (.mp4)"]
+
+    subUI["FastAPI App\nmain.py + routes"]
+    subAPI["/api/* REST endpoints"]
+
+    subVID --> subCLI
+    subCLI --> subAPI
+    subAPI --> subEXTRACT
+    
+    subEXTRACT --> subDETECT
+    subDETECT --> subEMBED
+    
+    subEMBED --> subCHROMA
+    subEMBED --> subSQLI
+    
+    subAPI --> subCLUS
+    subCHROMA --> subCLUS
+    
+    subAPI --> subPAGE_LABEL
+    subAPI --> subPAGE_SEARCH
+    
+    subPAGE_LABEL --> subPERSONS
+    subPERSONS --> subSQLI
+    
+    subPAGE_SEARCH --> subPERSONS
+    subPAGE_SEARCH --> subCHROMA
+    
+    subPERSONS --> subCOMPILE
+    subPAGE_SEARCH --> subCOMPILE
+    subCOMPILE --> subRESULT
+
+    style subVID fill:#E8F5E9,stroke:#2E7D32
+    style subCLI fill:#E8F5E9,stroke:#2E7D32
+    style subEXTRACT fill:#FFF3E0,stroke:#E65100
+    style subDETECT fill:#FFF3E0,stroke:#E65100
+    style subEMBED fill:#FFF3E0,stroke:#E65100
+    style subCHROMA fill:#E3F2FD,stroke:#1565C0
+    style subSQLI fill:#E3F2FD,stroke:#1565C0
+    style subPERSONS fill:#E3F2FD,stroke:#1565C0
+    style subCLUS fill:#F3E5F5,stroke:#7B1FA2
+    style subCOMPILE fill:#FCE4EC,stroke:#AD1457
+    style subRESULT fill:#ECEFF1,stroke:#37474F
+    style subPAGE_LABEL fill:#FFF8E1,stroke:#F57F17
+    style subPAGE_SEARCH fill:#FFF8E1,stroke:#F57F17
+    style subUI fill:#FFF8E1,stroke:#F57F17
+    style subAPI fill:#FFF8E1,stroke:#F57F17
+```
+
 ---
 
 ## CLI Reference
