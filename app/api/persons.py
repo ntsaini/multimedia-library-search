@@ -1,7 +1,8 @@
 import json
+import uuid
 
 import numpy as np
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -77,6 +78,41 @@ def merge_persons(req: MergeRequest):
     conn.close()
 
     return {"status": "merged"}
+
+
+@router.post("/api/faces/{face_id}/promote")
+def promote_face_to_person(face_id: str, name: str = Form(default="")):
+    """Create a new single-face person from an unclustered noise face."""
+    collection = get_collection()
+    result = collection.get(ids=[face_id], include=["embeddings", "metadatas"])
+    if not result["ids"]:
+        raise HTTPException(status_code=404, detail="Face not found")
+
+    meta = result["metadatas"][0]
+    if meta.get("person_id") != "unlabeled":
+        raise HTTPException(status_code=400, detail="Face is already assigned to a person")
+
+    embedding = np.array(result["embeddings"][0], dtype=np.float32)
+    norm = np.linalg.norm(embedding)
+    centroid = embedding / norm if norm > 0 else embedding
+
+    person_id = str(uuid.uuid4())
+    thumbnail_path = meta.get("thumbnail_path", "")
+    label = name.strip() or None
+
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO persons (id, name, thumbnail_path, face_count, samples, centroid)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (person_id, label, thumbnail_path, 1, json.dumps([]), json.dumps(centroid.tolist())),
+    )
+    conn.commit()
+    conn.close()
+
+    meta["person_id"] = person_id
+    collection.update(ids=[face_id], metadatas=[meta])
+
+    return {"person_id": person_id, "thumbnail_path": thumbnail_path}
 
 
 @router.post("/api/persons/{person_id}/label")

@@ -15,6 +15,7 @@
 | Frontend | Vanilla HTML + htmx | No build step; htmx handles dynamic updates without a JS framework |
 | CLI | `argparse` (stdlib) | No extra dependency |
 | Progress | `tqdm` | Single-dependency progress bars |
+| EXIF + image composition | Pillow | EXIF `DateTimeOriginal` extraction; photo collage grid rendering |
 
 ---
 
@@ -537,7 +538,225 @@ The Highlight Reel panel appears on `/search` whenever named persons are in the 
 
 ---
 
-## Phase 5 — Full Body Re-ID (Future)
+## Phase 5 — Photo Library Extension
+
+**Objective:** Index photos alongside videos; show photo results in a dedicated tab on `/search`; generate downloadable photo collages.
+
+---
+
+### Data Model
+
+**New `photos` table (SQLite)**
+
+```sql
+CREATE TABLE IF NOT EXISTS photos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    path       TEXT UNIQUE NOT NULL,
+    filename   TEXT NOT NULL,
+    taken_at   TEXT,          -- ISO 8601; from EXIF DateTimeOriginal, fallback to mtime
+    indexed_at TEXT DEFAULT (datetime('now'))
+);
+```
+
+**ChromaDB `faces` collection — new metadata fields on photo face records**
+
+```
+media_type  str   -- "photo" (absent on existing video records = treated as "video")
+photo_id    int   -- FK → photos.id; set only when media_type == "photo"
+```
+
+Old video records require no migration. Absence of `media_type` is treated as `"video"` everywhere.
+
+---
+
+### `app/photo_indexer.py` — PhotoIndexer
+
+1. Walk directory for `.jpg .jpeg .png .heic .heif .webp` files
+2. Check `photos` table by path → skip if already indexed
+3. Load with `cv2.imread`; for HEIC files fall back to Pillow (`Image.open` → `np.array`)
+4. Run `FaceAnalysis.get(frame)` → same pipeline as VideoIndexer
+5. For each face: crop 128×128 thumbnail → save to `static/thumbnails/` → upsert to ChromaDB with `media_type="photo"`, `photo_id=N`
+6. Insert row into `photos` table on completion
+7. Extract `taken_at`: Pillow `Image.open()._getexif()` tag 36867 (`DateTimeOriginal`) → parse `"%Y:%m:%d %H:%M:%S"` → ISO 8601; fallback to `os.path.getmtime()`
+
+Progress state: extend the existing `index_progress` dict in `indexer.py` with `photos_total` and `photos_done` fields alongside the existing video fields.
+
+### Thumbnail cleanup (no changes required)
+
+Photo face thumbnails follow the exact same lifecycle as video face thumbnails:
+
+- **At index time:** each detected face produces a 128×128 PNG in `static/thumbnails/` — identical to the video path.
+- **After cluster:** `trim_thumbnails()` runs automatically and removes all but the representative + 4 sample crops per person. It operates on the `persons` table and `static/thumbnails/` directory regardless of the source media type — no modifications needed.
+- **On prune:** `prune_stale_media()` (renamed from `prune_stale_videos()` in Phase 5) checks both the `videos` and `photos` tables against disk, removes stale SQLite rows, their ChromaDB face records, and their thumbnail files in a single pass.
+
+### Clustering and labeling (no changes required)
+
+All clustering and labeling paths are media-type-agnostic and work unchanged for photo faces:
+
+**Full cluster (`python cli.py cluster`)** — fetches all embeddings from ChromaDB via `collection.get(include=["embeddings", "metadatas"])`. The query has no `media_type` filter; photo face embeddings are included automatically. DBSCAN groups them by similarity regardless of source. A cluster may contain crops from videos, photos, or both — that is correct and expected.
+
+**Incremental cluster (`python cli.py cluster --incremental`)** — fetches all `unlabeled` embeddings and matches against person centroids. Works identically for photo faces; the embedding vector is identical in format (512-dim ArcFace normed embedding from InsightFace). Auto-trigger fires after photo indexing too — `run_photo_indexer()` calls `run_incremental_clusterer(eps=eps)` using the same logic as `run_indexer()`.
+
+**Centroid updates** — weighted-average formula is embedding-only. Whether the face came from a video frame or a photo is irrelevant; the math is the same.
+
+**Re-sync (`python cli.py cluster --resync`)** — recomputes centroids from all assigned embeddings in ChromaDB, which now includes photo faces. No changes needed.
+
+**Merge** — operates at the person level, reassigning all ChromaDB face records for `source_id` to `target_id` regardless of `media_type`. Centroid is recomputed as a weighted average of all face embeddings. No changes needed.
+
+**Label preservation across full re-cluster** — works by comparing face ID overlap between old and new clusters. Face IDs for photos follow the same format as videos (`{safe_filename}_{face_idx}`); the preservation logic does not inspect media type.
+
+**`/label` UI — no changes**
+
+Photo face crops are 128×128 PNGs in `static/thumbnails/` — visually identical to video face crops. The label page shows them in the same sample grid. `face_count` on each person card reflects faces from both videos and photos as a single number; no source breakdown is shown. The point of `/label` is identifying *who*, not *where they appeared* — that distinction belongs on `/search`. Adding a "from photo / from video" indicator to `/label` would add noise without helping the user assign names.
+
+A person labeled in `/label` automatically surfaces in both the Videos tab and the Photos tab on `/search` — this is the intended behavior.
+
+---
+
+### CLI changes
+
+`python cli.py index <directory>` processes both video and photo files in a single pass:
+- Videos: `.mp4 .avi .mov .mkv` (unchanged)
+- Photos: `.jpg .jpeg .png .heic .heif .webp` (new)
+
+New flags:
+- `--videos-only` — skip photo files
+- `--photos-only` — skip video files
+
+Incremental clustering auto-triggers after index as before; photo faces are assigned to persons via the same DBSCAN + centroid-match pipeline.
+
+---
+
+### API routes
+
+**Photo serving (`api/photo.py`)**
+
+```
+GET /api/photo/{photo_id}
+```
+
+Simple `FileResponse` returning the source image. No range requests needed.
+
+**Search API updates (`api/search.py`)**
+
+Both name search and photo-upload search already query the shared `faces` collection. The only change is splitting the response by `media_type`:
+
+```
+GET /api/search?name=Alice
+POST /api/search/photo   (multipart/form-data: file)
+```
+
+Response shape (both endpoints):
+```json
+{
+  "videos": [
+    {"media_type": "video", "video_id": 1, "filename": "...", "timestamp_sec": 12.5, "thumbnail_path": "..."}
+  ],
+  "photos": [
+    {"media_type": "photo", "photo_id": 7, "filename": "...", "taken_at": "2024-08-14T15:30:00", "thumbnail_path": "..."}
+  ]
+}
+```
+
+Photo results are deduplicated by `photo_id` (a person may have multiple faces detected in one photo).
+
+**Photo collage (`api/collage.py`)**
+
+```
+POST /api/collage
+     body: {
+       person_id,
+       columns=3,            -- 2 | 3 | 4
+       sort="asc",           -- asc | desc | random
+       captions=true         -- draw taken_at date under each cell
+     }
+     → {job_id}
+
+GET  /api/collage/{job_id}
+     → {status, progress, photos_total, photos_done, error, filename}
+
+GET  /api/collage/{job_id}/download
+     → FileResponse (image/png) when status == "done"
+```
+
+Job state held in a module-level dict in `collage.py` — same pattern as compile jobs.
+
+---
+
+### `app/collage.py` — `run_collage()`
+
+```
+1. Fetch all photo face records for person_id from ChromaDB where media_type == "photo"
+2. Deduplicate by photo_id — one cell per source photo
+3. Load taken_at from SQLite photos table; sort per order parameter
+4. For each photo: load with Pillow, center-crop to square, resize to COLLAGE_CELL_SIZE (400px)
+5. Compose grid: ceil(n / columns) rows × columns columns on a white canvas with COLLAGE_PADDING (8px) gutters
+6. If captions=true: draw taken_at date string below each cell using ImageDraw (small font, dark grey)
+7. Save as PNG to output/{safe_name}_{job_id[:8]}.png
+```
+
+Constants in `config.py`:
+```python
+COLLAGE_CELL_SIZE = 400   # px — each photo cell is resized to this square
+COLLAGE_PADDING   = 8     # px — gutter between cells and canvas border
+```
+
+---
+
+### Web UI — `/search` updates
+
+**Two tabs on the results section:**
+
+```
+[Videos (14)]  [Photos (31)]
+```
+
+Default active tab: whichever count is higher. Tabs swap the result list in place via htmx.
+
+**Video tab** — unchanged from Phase 3/4 (scene chips, custom player, highlight reel panel).
+
+**Photo tab:**
+- Each result card: square preview thumbnail + filename + `taken_at` date + "View" button
+- "View" opens a lightbox modal: full-size `<img src="/api/photo/{id}">`, `←` / `→` keyboard navigation between photo results, `Esc` to close
+- `imgEl.src = ''` on close to release memory (same pattern as video player reset)
+
+**Photo Collage panel** — appears below photo results when a named person is in scope (mirrors Highlight Reel panel):
+- Columns selector: 2 / 3 / 4 (default 3)
+- Sort dropdown: Earliest first / Latest first / Random
+- Captions toggle: on/off
+- "Create Collage" button → `POST /api/collage` → reveals progress bar polling every second
+- On completion: "Download Collage" link
+
+---
+
+### Project structure additions
+
+```
+app/
+├── photo_indexer.py    # PhotoIndexer — EXIF extraction + face detection for images
+├── collage.py          # run_collage() + job state dict
+└── api/
+    ├── photo.py        # GET /api/photo/{photo_id}
+    └── collage.py      # POST /api/collage, GET /api/collage/{job_id}[/download]
+```
+
+---
+
+### Verification
+
+- `python cli.py index /my/photos` processes image files, skips re-runs, triggers incremental cluster
+- `/search?name=Alice` returns a Photos tab with photo cards dated correctly from EXIF
+- "View" lightbox opens full photo; keyboard navigation cycles through results
+- "Create Collage" runs to completion; downloaded PNG shows a correctly laid-out grid with dates
+- Delete a source photo from disk; re-run `index` — `prune_stale_media()` removes its SQLite row, ChromaDB face records, and thumbnail crops
+- Run `cluster` after indexing photos — `trim_thumbnails()` reduces `static/thumbnails/` to representative + sample crops only, same as after video indexing
+- Index a mixed folder (videos + photos), run `cluster` — the same person appears on one `/label` card regardless of whether their faces came from videos, photos, or both
+- Assign a name in `/label` — that name returns results in both the Videos tab and Photos tab on `/search`
+- Run `cluster --incremental` after adding new photos — new photo faces are assigned to existing persons without disrupting labels
+
+---
+
+## Phase 6 — Full Body Re-ID (Future)
 
 Not built in Phases 1–4. Design notes for when this is scoped:
 
@@ -548,14 +767,14 @@ Not built in Phases 1–4. Design notes for when this is scoped:
 - **Search fusion:** `score = 0.6 * face_similarity + 0.4 * body_similarity`; body-only if no face detected in frame
 - **UI:** "Full body matching" toggle on `/search`; enrolls body embeddings from existing labeled faces automatically
 
-Phases 1–4 are unaffected — this is purely additive.
+Phases 1–5 are unaffected — this is purely additive.
 
 ---
 
 ## CLI Reference
 
 ```
-python cli.py index          <directory>  [--interval 1.0] [--gpu] [--no-cluster] [--eps 0.6]
+python cli.py index          <directory>  [--interval 1.0] [--gpu] [--no-cluster] [--eps 0.6] [--videos-only] [--photos-only]
 python cli.py cluster                     [--incremental] [--eps 0.6] [--min-samples 3]
 python cli.py prune                       [--dry-run]
 python cli.py trim-thumbnails             [--dry-run]
@@ -563,6 +782,8 @@ python cli.py backfill-dates
 python cli.py stats
 python cli.py serve                       [--host 0.0.0.0] [--port 8000]
 ```
+
+`--videos-only` and `--photos-only` are mutually exclusive; omitting both processes all media types.
 
 All web UI and API available at `http://localhost:8000` after `serve`.
 
@@ -574,14 +795,14 @@ All web UI and API available at `http://localhost:8000` after `serve`.
 
 | Step | Triggered by | What it does |
 |---|---|---|
-| `prune_stale_videos()` | Start of `index` | Removes SQLite rows, ChromaDB face records, and thumbnail files for videos deleted from disk; also removes persons whose last faces are gone |
-| `trim_thumbnails()` | End of `cluster` (full and incremental) | Deletes all face thumbnail PNGs not referenced as a person's representative thumbnail or sample; keeps at most 5 per person |
+| `prune_stale_media()` | Start of `index` | Removes SQLite rows (both `videos` and `photos`), ChromaDB face records, and thumbnail files for any media deleted from disk; also removes persons whose last faces are gone |
+| `trim_thumbnails()` | End of `cluster` (full and incremental) | Deletes all face thumbnail PNGs not referenced as a person's representative thumbnail or sample; keeps at most 5 per person. Covers face crops from both videos and photos — they share the same `static/thumbnails/` directory |
 
 Both are also available as manual CLI commands (`prune`, `trim-thumbnails`) with a `--dry-run` flag for safe previewing.
 
 ### Thumbnail lifecycle
 
-Each detected face gets a 128×128 PNG crop saved to `static/thumbnails/` at index time. After clustering, only 1 representative thumbnail + up to 4 sample thumbnails per person are needed (used by the `/label` UI). Everything else is redundant — `trim_thumbnails()` removes them automatically after each cluster run, keeping the directory small regardless of library size.
+Each detected face — whether from a video frame or a source photo — gets a 128×128 PNG crop saved to `static/thumbnails/` at index time. After clustering, only 1 representative thumbnail + up to 4 sample thumbnails per person are needed (used by the `/label` UI). Everything else is redundant — `trim_thumbnails()` removes them automatically after each cluster run, keeping the directory small regardless of library size. Photo face crops and video face crops are indistinguishable at this stage; `trim_thumbnails()` requires no changes to handle both.
 
 ---
 
@@ -606,6 +827,7 @@ opencv-python-headless
 numpy
 scikit-learn
 tqdm
+Pillow                   # Phase 5: EXIF date extraction + photo collage composition
 ```
 
 No React, no Node, no Docker required.

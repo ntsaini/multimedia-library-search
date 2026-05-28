@@ -1,13 +1,17 @@
 import json
 import uuid
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
 from app.chroma import get_collection
+from app.config import BASE_DIR
 from app.database import get_connection
+
+_STATIC_DIR = BASE_DIR / "static"
 
 
 def _normed(arr: np.ndarray) -> np.ndarray:
@@ -16,10 +20,16 @@ def _normed(arr: np.ndarray) -> np.ndarray:
     return arr / norms
 
 
+def _thumb_exists(p: str) -> bool:
+    if not p:
+        return False
+    path = Path(p)
+    return path.exists() if path.is_absolute() else (_STATIC_DIR / p).exists()
+
+
 def _build_person_records(labels, X, metadatas):
-    """Return list of dicts ready for SQLite INSERT, and a parallel updated_metas list."""
     records = []
-    assignments = {}  # face_global_index -> person_id
+    assignments = {}
     for cluster_label in tqdm(sorted({lbl for lbl in labels if lbl >= 0}), desc="Building clusters"):
         indices = np.where(labels == cluster_label)[0]
         person_id = str(uuid.uuid4())
@@ -28,9 +38,17 @@ def _build_person_records(labels, X, metadatas):
         centroid = mean_vec / max(np.linalg.norm(mean_vec), 1e-9)
         medoid_local = int(np.argmin(np.linalg.norm(cluster_vecs - mean_vec, axis=1)))
         medoid_global = int(indices[medoid_local])
+
         thumbnail_path = metadatas[medoid_global].get("thumbnail_path", "")
+        if not _thumb_exists(thumbnail_path):
+            thumbnail_path = next(
+                (metadatas[int(i)].get("thumbnail_path", "") for i in indices
+                 if _thumb_exists(metadatas[int(i)].get("thumbnail_path", ""))),
+                "",
+            )
+
         all_paths = [metadatas[int(i)].get("thumbnail_path", "") for i in indices]
-        samples = [p for p in all_paths if p and p != thumbnail_path][:4]
+        samples = [p for p in all_paths if _thumb_exists(p) and p != thumbnail_path][:4]
         for i in indices:
             assignments[int(i)] = person_id
         records.append({
@@ -61,22 +79,25 @@ def _bulk_update_chroma(collection, ids, metadatas, batch_size=500):
 
 
 def trim_thumbnails() -> int:
-    """Delete face thumbnails not referenced as person samples. Returns count deleted."""
-    from pathlib import Path
     from app.config import THUMBNAILS_DIR
-
+    keep = set()
     conn = get_connection()
     rows = conn.execute("SELECT thumbnail_path, samples FROM persons").fetchall()
     conn.close()
-
-    keep = set()
     for row in rows:
         if row["thumbnail_path"]:
             keep.add(Path(row["thumbnail_path"]).name)
         for path in json.loads(row["samples"] or "[]"):
             if path:
                 keep.add(Path(path).name)
-
+    result = get_collection().get(
+        where={"person_id": {"$eq": "unlabeled"}},
+        include=["metadatas"],
+    )
+    for meta in (result["metadatas"] or []):
+        p = meta.get("thumbnail_path", "")
+        if p:
+            keep.add(Path(p).name)
     deleted = 0
     for png in THUMBNAILS_DIR.glob("*.png"):
         if png.name not in keep:
@@ -85,9 +106,66 @@ def trim_thumbnails() -> int:
     return deleted
 
 
-def run_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
-    collection = get_collection()
+def _dbscan_group(ids, X, metas, eps, min_samples):
+    """Run DBSCAN on one group of faces; return new person records and updated metas."""
+    if not ids:
+        return [], [], [dict(m) for m in metas]
+    labels = DBSCAN(
+        eps=eps, min_samples=min_samples, metric="euclidean",
+        algorithm="ball_tree", n_jobs=-1,
+    ).fit_predict(X)
+    records, assignments = _build_person_records(labels, X, metas)
+    updated = [dict(m) for m in metas]
+    for m in updated:
+        m["person_id"] = "unlabeled"
+    for idx, pid in assignments.items():
+        updated[idx]["person_id"] = pid
+    noise = int(np.sum(labels == -1))
+    return records, updated, noise
 
+
+def _assign_to_persons(person_ids, C, person_counts, ids, X, metas, eps):
+    """Assign faces to existing persons by centroid distance < eps.
+
+    Returns (new_centroids, new_counts, assigned_mask, updated_metas).
+    """
+    dot = C @ X.T
+    np.clip(dot, -1.0, 1.0, out=dot)
+    dists = np.sqrt(np.maximum(0.0, 2.0 - 2.0 * dot))
+    best_idx = np.argmin(dists, axis=0)
+    best_dist = dists[best_idx, np.arange(len(ids))]
+    assigned_mask = best_dist < eps
+
+    person_new_faces = defaultdict(list)
+    for j in np.where(assigned_mask)[0]:
+        pid = person_ids[best_idx[j]]
+        person_new_faces[pid].append((ids[j], metas[j], X[j]))
+
+    new_centroids = {}
+    new_counts = {}
+    collection = get_collection()
+    for pid, faces in person_new_faces.items():
+        centroid = C[person_ids.index(pid)].copy()
+        n = person_counts[pid]
+        for face_id, meta, emb in faces:
+            centroid = (centroid * n + emb) / (n + 1)
+            n += 1
+            meta["person_id"] = pid
+        norm = np.linalg.norm(centroid)
+        new_centroids[pid] = centroid / norm if norm > 0 else centroid
+        new_counts[pid] = n
+        face_ids_batch = [f[0] for f in faces]
+        metas_batch = [f[1] for f in faces]
+        for i in range(0, len(face_ids_batch), 500):
+            collection.update(
+                ids=face_ids_batch[i : i + 500],
+                metadatas=metas_batch[i : i + 500],
+            )
+    return new_centroids, new_counts, assigned_mask
+
+
+def run_clusterer(eps_video: float = 0.7, eps_photo: float = 1.0, min_samples: int = 3) -> dict:
+    collection = get_collection()
     print("Fetching embeddings from ChromaDB...")
     result = collection.get(include=["embeddings", "metadatas"])
     ids = result["ids"]
@@ -95,30 +173,14 @@ def run_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
     metadatas = result["metadatas"]
 
     if not ids:
-        print("No faces indexed yet. Run 'index' first.")
+        print("No faces indexed yet.")
         return {"clusters": 0, "noise": 0}
 
     X = _normed(np.array(embeddings, dtype=np.float32))
 
-    print(f"Clustering {len(ids):,} faces (eps={eps}, min_samples={min_samples})...")
-    # euclidean on normed embeddings enables ball_tree → O(n log n) vs O(n²) for cosine
-    labels = DBSCAN(
-        eps=eps, min_samples=min_samples, metric="euclidean",
-        algorithm="ball_tree", n_jobs=-1,
-    ).fit_predict(X)
-
-    cluster_labels = sorted({lbl for lbl in labels if lbl >= 0})
-    noise_count = int(np.sum(labels == -1))
-    print(f"Found {len(cluster_labels)} clusters, {noise_count} noise points.")
-
-    records, assignments = _build_person_records(labels, X, metadatas)
-
-    # Prepare ChromaDB metadata updates (reset all, then assign clusters)
-    updated_metas = [dict(m) for m in metadatas]
-    for m in updated_metas:
-        m["person_id"] = "unlabeled"
-    for idx, pid in assignments.items():
-        updated_metas[idx]["person_id"] = pid
+    # Split by media type and cluster each group with its own eps
+    video_idx = [i for i, m in enumerate(metadatas) if m.get("media_type") != "photo"]
+    photo_idx = [i for i, m in enumerate(metadatas) if m.get("media_type") == "photo"]
 
     existing = get_connection()
     has_named = existing.execute(
@@ -130,18 +192,48 @@ def run_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
 
     conn = get_connection()
     conn.execute("DELETE FROM persons")
-    _insert_persons(conn, records)
+
+    all_records = []
+    updated_metas = [dict(m) for m in metadatas]
+    total_noise = 0
+
+    for indices, eps, label in [(video_idx, eps_video, "video"), (photo_idx, eps_photo, "photo")]:
+        if not indices:
+            continue
+        sub_X = X[indices]
+        sub_metas = [metadatas[i] for i in indices]
+        print(f"Clustering {len(indices):,} {label} faces (eps={eps}, min_samples={min_samples})...")
+        labels = DBSCAN(
+            eps=eps, min_samples=min_samples, metric="euclidean",
+            algorithm="ball_tree", n_jobs=-1,
+        ).fit_predict(sub_X)
+        n_clusters = len({l for l in labels if l >= 0})
+        noise = int(np.sum(labels == -1))
+        total_noise += noise
+        print(f"  {label}: {n_clusters} clusters, {noise} noise")
+        records, assignments = _build_person_records(labels, sub_X, sub_metas)
+        all_records.extend(records)
+        for local_idx, pid in assignments.items():
+            updated_metas[indices[local_idx]]["person_id"] = pid
+        for gi in indices:
+            if updated_metas[gi]["person_id"] not in {r["id"] for r in records}:
+                updated_metas[gi]["person_id"] = "unlabeled"
+
+    _insert_persons(conn, all_records)
     conn.commit()
     conn.close()
 
     _bulk_update_chroma(collection, ids, updated_metas)
-
     trimmed = trim_thumbnails()
-    print(f"\nDone. {len(cluster_labels)} persons | {noise_count} faces unlabeled | {trimmed:,} thumbnails trimmed.")
-    return {"clusters": len(cluster_labels), "noise": noise_count}
+    print(f"\nDone. {len(all_records)} persons | {total_noise} noise | {trimmed:,} thumbnails trimmed.")
+    return {"clusters": len(all_records), "noise": total_noise}
 
 
-def run_incremental_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
+def run_incremental_clusterer(
+    eps_video: float = 0.7,
+    eps_photo: float = 1.0,
+    min_samples: int = 3,
+) -> dict:
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, face_count, centroid FROM persons WHERE centroid IS NOT NULL"
@@ -150,11 +242,10 @@ def run_incremental_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
 
     if not rows:
         print("No existing clusters — falling back to full cluster.")
-        return run_clusterer(eps=eps, min_samples=min_samples)
+        return run_clusterer(eps_video=eps_video, eps_photo=eps_photo, min_samples=min_samples)
 
     person_ids = [r["id"] for r in rows]
     person_counts = {r["id"]: r["face_count"] for r in rows}
-    # C: (P, 512) — one centroid row per person
     C = np.array([json.loads(r["centroid"]) for r in rows], dtype=np.float32)
 
     collection = get_collection()
@@ -163,101 +254,70 @@ def run_incremental_clusterer(eps: float = 0.6, min_samples: int = 3) -> dict:
         where={"person_id": {"$eq": "unlabeled"}},
         include=["embeddings", "metadatas"],
     )
-    ids = result["ids"]
-    embeddings = result["embeddings"]
-    metadatas = result["metadatas"]
-
-    if not ids:
+    if not result["ids"]:
         print("No new faces to process.")
         return {"assigned": 0, "new_clusters": 0, "noise": 0}
 
-    X = _normed(np.array(embeddings, dtype=np.float32))
-    print(f"Assigning {len(ids):,} new faces to {len(person_ids)} existing persons...")
+    ids = result["ids"]
+    metadatas = list(result["metadatas"])
+    X = _normed(np.array(result["embeddings"], dtype=np.float32))
 
-    # Batch distance: for normed vectors, euclidean² = 2 - 2·dot
-    dot = C @ X.T  # (P, F)
-    np.clip(dot, -1.0, 1.0, out=dot)
-    dists = np.sqrt(np.maximum(0.0, 2.0 - 2.0 * dot))  # (P, F)
+    # Split by media type
+    video_idx = [i for i, m in enumerate(metadatas) if m.get("media_type") != "photo"]
+    photo_idx = [i for i, m in enumerate(metadatas) if m.get("media_type") == "photo"]
 
-    best_idx = np.argmin(dists, axis=0)   # (F,) — index into person_ids
-    best_dist = dists[best_idx, np.arange(len(ids))]  # (F,)
-    assigned_mask = best_dist < eps
+    total_assigned = 0
+    total_new_clusters = 0
+    total_noise = 0
+    all_new_records: list = []
+    all_new_centroids: dict = {}
+    all_new_counts: dict = {}
 
-    # Group assigned faces by person
-    person_new_faces = defaultdict(list)  # person_id -> [(face_id, meta, embedding)]
-    for j in np.where(assigned_mask)[0]:
-        pid = person_ids[best_idx[j]]
-        person_new_faces[pid].append((ids[j], metadatas[j], X[j]))
+    for indices, eps, label in [(video_idx, eps_video, "video"), (photo_idx, eps_photo, "photo")]:
+        if not indices:
+            continue
+        sub_ids = [ids[i] for i in indices]
+        sub_X = X[indices]
+        sub_metas = [metadatas[i] for i in indices]
 
-    # Update centroids and ChromaDB for assigned faces
-    new_centroids = {}
-    new_counts = {}
-    for pid, faces in person_new_faces.items():
-        centroid = C[person_ids.index(pid)].copy()
-        n = person_counts[pid]
-        for face_id, meta, emb in faces:
-            centroid = (centroid * n + emb) / (n + 1)
-            n += 1
-            meta["person_id"] = pid
-        norm = np.linalg.norm(centroid)
-        new_centroids[pid] = centroid / norm if norm > 0 else centroid
-        new_counts[pid] = n
+        print(f"Processing {len(sub_ids):,} unlabeled {label} faces (eps={eps})...")
+        new_centroids, new_counts, assigned_mask = _assign_to_persons(
+            person_ids, C, person_counts, sub_ids, sub_X, sub_metas, eps
+        )
+        all_new_centroids.update(new_centroids)
+        all_new_counts.update(new_counts)
+        total_assigned += int(assigned_mask.sum())
 
-        face_ids_batch = [f[0] for f in faces]
-        metas_batch = [f[1] for f in faces]
-        for i in range(0, len(face_ids_batch), 500):
-            collection.update(
-                ids=face_ids_batch[i : i + 500],
-                metadatas=metas_batch[i : i + 500],
+        unmatched = np.where(~assigned_mask)[0]
+        if len(unmatched) >= min_samples:
+            unmatched_ids = [sub_ids[i] for i in unmatched]
+            unmatched_X = sub_X[unmatched]
+            unmatched_metas = [sub_metas[i] for i in unmatched]
+            print(f"  Running DBSCAN on {len(unmatched)} unmatched {label} faces...")
+            records, updated_metas_sub, noise = _dbscan_group(
+                unmatched_ids, unmatched_X, unmatched_metas, eps, min_samples
             )
+            all_new_records.extend(records)
+            total_new_clusters += len(records)
+            total_noise += noise
+            _bulk_update_chroma(collection, unmatched_ids, updated_metas_sub)
+        else:
+            total_noise += len(unmatched)
 
+    # Persist centroid updates
     conn = get_connection()
-    for pid, centroid in new_centroids.items():
+    for pid, centroid in all_new_centroids.items():
         conn.execute(
             "UPDATE persons SET centroid = ?, face_count = ? WHERE id = ?",
-            (json.dumps(centroid.tolist()), new_counts[pid], pid),
+            (json.dumps(centroid.tolist()), all_new_counts[pid], pid),
         )
+    _insert_persons(conn, all_new_records)
     conn.commit()
     conn.close()
 
-    assigned_count = int(assigned_mask.sum())
-
-    # Mini-DBSCAN on unmatched faces to discover new persons
-    unmatched = np.where(~assigned_mask)[0]
-    new_clusters = 0
-    noise_count = 0
-
-    if len(unmatched) > 0:
-        unmatched_ids = [ids[i] for i in unmatched]
-        unmatched_X = X[unmatched]
-        unmatched_metas = [metadatas[i] for i in unmatched]
-
-        if len(unmatched) >= min_samples:
-            print(f"Running DBSCAN on {len(unmatched)} unmatched faces...")
-            labels = DBSCAN(
-                eps=eps, min_samples=min_samples, metric="euclidean",
-                algorithm="ball_tree", n_jobs=-1,
-            ).fit_predict(unmatched_X)
-
-            noise_count = int(np.sum(labels == -1))
-            records, assignments = _build_person_records(labels, unmatched_X, unmatched_metas)
-            new_clusters = len(records)
-
-            updated_metas = [dict(m) for m in unmatched_metas]
-            for m in updated_metas:
-                m["person_id"] = "unlabeled"
-            for idx, pid in assignments.items():
-                updated_metas[idx]["person_id"] = pid
-
-            conn = get_connection()
-            _insert_persons(conn, records)
-            conn.commit()
-            conn.close()
-
-            _bulk_update_chroma(collection, unmatched_ids, updated_metas)
-        else:
-            noise_count = len(unmatched)
-
     trimmed = trim_thumbnails()
-    print(f"\nDone. {assigned_count} assigned | {new_clusters} new persons | {noise_count} noise | {trimmed:,} thumbnails trimmed.")
-    return {"assigned": assigned_count, "new_clusters": new_clusters, "noise": noise_count}
+    print(
+        f"\nDone. {total_assigned} assigned | {total_new_clusters} new persons"
+        f" | {total_noise} noise | {trimmed:,} thumbnails trimmed."
+    )
+    return {"assigned": total_assigned, "new_clusters": total_new_clusters, "noise": total_noise}

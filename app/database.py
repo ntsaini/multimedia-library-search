@@ -20,6 +20,14 @@ def init_db() -> None:
             indexed_at   TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS photos (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            path       TEXT UNIQUE NOT NULL,
+            filename   TEXT NOT NULL,
+            taken_at   TEXT,
+            indexed_at TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS persons (
             id             TEXT PRIMARY KEY,
             name           TEXT,

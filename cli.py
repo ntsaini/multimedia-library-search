@@ -9,20 +9,86 @@ def check_dependencies() -> None:
         sys.exit("Error: ffmpeg not found. Install it and ensure it is on your PATH.")
 
 
+def _force_clear_directory(directory: str) -> None:
+    """Delete all DB rows and ChromaDB face entries for media under directory."""
+    from app.database import get_connection
+    from app.indexer import clear_paths_from_index
+
+    prefix = str(Path(directory).resolve())
+    db = get_connection()
+    video_rows = db.execute(
+        "SELECT path FROM videos WHERE path LIKE ?", (prefix + "%",)
+    ).fetchall()
+    photo_rows = db.execute(
+        "SELECT path FROM photos WHERE path LIKE ?", (prefix + "%",)
+    ).fetchall()
+    db.close()
+
+    paths = [r["path"] for r in video_rows] + [r["path"] for r in photo_rows]
+    n_v, n_p = len(video_rows), len(photo_rows)
+
+    if not paths:
+        print("No existing entries found for this directory — nothing to clear.")
+        return
+
+    print(f"Clearing {n_v} video(s) and {n_p} photo(s) from index…")
+    clear_paths_from_index(paths)
+    print("Cleared. Files will be reprocessed on next index run.")
+
+
 def cmd_index(args) -> None:
     from app.database import init_db
     from app.chroma import get_collection
     from app.indexer import run_indexer
+    from app.photo_indexer import run_photo_indexer
 
     init_db()
     get_collection()
-    run_indexer(
-        directory=args.directory,
-        interval_sec=args.interval,
-        use_gpu=args.gpu,
-        auto_cluster=not args.no_cluster,
-        eps=args.eps,
-    )
+
+    if args.force:
+        _force_clear_directory(args.directory)
+
+    do_videos = not args.photos_only
+    do_photos = not args.videos_only
+    do_cluster = not args.no_cluster
+
+    if do_videos and do_photos:
+        # Both phases: suppress per-phase clustering, run exactly once at the end
+        run_indexer(
+            directory=args.directory,
+            interval_sec=args.interval,
+            use_gpu=args.gpu,
+            auto_cluster=False,
+            eps=args.eps,
+            _finalize=False,
+        )
+        run_photo_indexer(
+            directory=args.directory,
+            use_gpu=args.gpu,
+            auto_cluster=False,
+            eps=args.eps,
+            _finalize=False,
+        )
+        if do_cluster:
+            from app.clusterer import run_incremental_clusterer
+            run_incremental_clusterer(eps=args.eps)
+    elif do_videos:
+        run_indexer(
+            directory=args.directory,
+            interval_sec=args.interval,
+            use_gpu=args.gpu,
+            auto_cluster=do_cluster,
+            eps=args.eps,
+            _finalize=True,
+        )
+    else:  # photos only
+        run_photo_indexer(
+            directory=args.directory,
+            use_gpu=args.gpu,
+            auto_cluster=do_cluster,
+            eps=args.eps,
+            _finalize=True,
+        )
 
 
 def cmd_cluster(args) -> None:
@@ -44,6 +110,7 @@ def cmd_stats(args) -> None:
 
     db = get_connection()
     videos = db.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
+    photos = db.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
     persons = db.execute("SELECT COUNT(*) FROM persons").fetchone()[0]
     labeled = db.execute(
         "SELECT COUNT(*) FROM persons WHERE name IS NOT NULL"
@@ -53,6 +120,7 @@ def cmd_stats(args) -> None:
     faces = get_collection().count()
 
     print(f"Videos:  {videos}")
+    print(f"Photos:  {photos}")
     print(f"Faces:   {faces:,}")
     print(f"Persons: {persons} ({labeled} labeled)")
 
@@ -60,30 +128,38 @@ def cmd_stats(args) -> None:
 def cmd_prune(args) -> None:
     from pathlib import Path
     from app.database import init_db, get_connection
-    from app.chroma import get_collection
-    from app.indexer import prune_stale_videos
+    from app.indexer import prune_stale_media
 
     init_db()
 
     if args.dry_run:
         db = get_connection()
-        collection = get_collection()
-        rows = db.execute("SELECT path, filename FROM videos").fetchall()
-        stale = [r for r in rows if not Path(r["path"]).exists()]
+        video_rows = db.execute("SELECT path, filename FROM videos").fetchall()
+        photo_rows = db.execute("SELECT path, filename FROM photos").fetchall()
+        stale_v = [r for r in video_rows if not Path(r["path"]).exists()]
+        stale_p = [r for r in photo_rows if not Path(r["path"]).exists()]
         db.close()
-        if not stale:
-            print("No stale videos found.")
+        if not stale_v and not stale_p:
+            print("No stale media found.")
         else:
-            print(f"Would remove {len(stale)} stale video(s):")
-            for r in stale:
-                print(f"  {r['filename']}")
+            if stale_v:
+                print(f"Would remove {len(stale_v)} stale video(s):")
+                for r in stale_v:
+                    print(f"  {r['filename']}")
+            if stale_p:
+                print(f"Would remove {len(stale_p)} stale photo(s):")
+                for r in stale_p:
+                    print(f"  {r['filename']}")
         return
 
-    pruned = prune_stale_videos()
-    if pruned:
-        print(f"Removed {pruned} stale video(s) and their associated data.")
+    n_vid, n_photo = prune_stale_media()
+    if n_vid or n_photo:
+        parts = []
+        if n_vid:   parts.append(f"{n_vid} video(s)")
+        if n_photo: parts.append(f"{n_photo} photo(s)")
+        print(f"Removed {' and '.join(parts)} and their associated data.")
     else:
-        print("No stale videos found — nothing to do.")
+        print("No stale media found — nothing to do.")
 
 
 def cmd_trim_thumbnails(args) -> None:
@@ -180,6 +256,19 @@ def main() -> None:
         "--eps", type=float, default=0.6,
         help="DBSCAN eps passed to the auto-triggered incremental cluster (default: 0.6)",
     )
+    p_index.add_argument(
+        "--force", action="store_true",
+        help="Remove existing index entries for this directory before indexing, forcing full reprocessing",
+    )
+    media_grp = p_index.add_mutually_exclusive_group()
+    media_grp.add_argument(
+        "--videos-only", action="store_true",
+        help="Index only video files; skip photos",
+    )
+    media_grp.add_argument(
+        "--photos-only", action="store_true",
+        help="Index only photo files; skip videos",
+    )
     p_index.set_defaults(func=cmd_index)
 
     p_cluster = subs.add_parser("cluster", help="Cluster faces into person identities")
@@ -202,7 +291,7 @@ def main() -> None:
 
     p_prune = subs.add_parser(
         "prune",
-        help="Remove stale data for videos deleted from disk",
+        help="Remove stale data for videos/photos deleted from disk",
     )
     p_prune.add_argument(
         "--dry-run", action="store_true",

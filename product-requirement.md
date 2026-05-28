@@ -36,6 +36,7 @@ A local, private video library search engine that indexes a directory of videos,
 | Frame extraction | OpenCV |
 | Video processing | FFmpeg |
 | Face clustering | DBSCAN (scikit-learn) |
+| EXIF + image composition | Pillow |
 
 ---
 
@@ -73,7 +74,21 @@ A local, private video library search engine that indexes a directory of videos,
 
 **US-12** As a user, I want to download the compiled highlight reel as an MP4 file.
 
-### Phase 5 — Full Body Search (Future)
+### Phase 5 — Photo Library Extension
+
+**US-14** As a user, I want to index a folder of photos alongside my videos so all appearances of a person are searchable in one place.
+
+**US-15** As a user, I want search results to show a Photos tab and a Videos tab separately so I can focus on one media type at a time.
+
+**US-16** As a user, I want to click on a photo result and view it full-size in a lightbox, with keyboard navigation between results.
+
+**US-17** As a user, I want to generate a photo collage of all photos a person appears in so I can get a visual overview at a glance.
+
+**US-18** As a user, I want to configure the collage layout (number of columns, sort order, date captions) before generating it.
+
+**US-19** As a user, I want to download the finished collage as a PNG file.
+
+### Phase 6 — Full Body Search (Future)
 
 **US-13** As a user, I want the search to find a person even when their face is partially obscured (cap, glasses, turned away), using their overall body appearance.
 
@@ -128,14 +143,31 @@ A local, private video library search engine that indexes a directory of videos,
 | F-26 | Run compilation as a background job; show progress in the UI |
 | F-27 | Provide a download link for the completed reel |
 
-### Phase 5 — Full Body Re-ID (Future)
+### Phase 5 — Photo Library Extension
 
 | ID | Requirement |
 |---|---|
-| F-28 | Detect full-person bounding boxes alongside face detection during indexing |
-| F-29 | Compute body appearance embeddings stored in ChromaDB |
-| F-30 | Search fuses face similarity and body similarity scores |
-| F-31 | UI provides a toggle to enable full-body matching |
+| F-32 | Accept image files (.jpg, .jpeg, .png, .heic, .heif, .webp) during `index` alongside video files |
+| F-33 | Extract EXIF `DateTimeOriginal` from photos; fall back to file mtime |
+| F-34 | Skip previously indexed photos (idempotent — safe to re-run on same directory) |
+| F-35 | Support `--videos-only` and `--photos-only` flags on the `index` command |
+| F-36 | Search results split into Videos and Photos tabs; default tab is whichever has more results |
+| F-37 | Photo result cards show a preview thumbnail, filename, and captured date |
+| F-38 | Clicking a photo result opens a full-size lightbox with `←` / `→` keyboard navigation and `Esc` to close |
+| F-39 | Photo files served locally via `GET /api/photo/{photo_id}` |
+| F-40 | Photo Collage panel available below photo results for named-person searches |
+| F-41 | Collage supports configurable columns (2/3/4), sort order (asc/desc/random), and optional date captions |
+| F-42 | Run collage generation as a background job; show progress in the UI |
+| F-43 | Provide a download link for the completed collage PNG |
+
+### Phase 6 — Full Body Re-ID (Future)
+
+| ID | Requirement |
+|---|---|
+| F-44 | Detect full-person bounding boxes alongside face detection during indexing |
+| F-45 | Compute body appearance embeddings stored in ChromaDB |
+| F-46 | Search fuses face similarity and body similarity scores |
+| F-47 | UI provides a toggle to enable full-body matching |
 
 ---
 
@@ -180,3 +212,9 @@ The system uses keyframe sampling (default: 1 frame/sec) rather than processing 
 - "Create Highlight Reel" triggers a background job with visible progress
 - The compiled MP4 downloads and contains the correct clips in chronological order
 - Clips from the same video that are close together are merged into one continuous segment
+
+### Phase 5 Done When:
+- `python cli.py index /my/photos` processes image files, skips already-indexed files, and triggers incremental clustering
+- `/search?name=Alice` shows a Photos tab with correctly dated photo cards
+- Clicking a photo opens the lightbox; keyboard navigation cycles through results
+- "Create Collage" runs as a background job; the downloaded PNG shows a correctly laid-out grid

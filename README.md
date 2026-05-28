@@ -1,6 +1,6 @@
 # Multimedia Library Search
 
-Search your local video library by face. Point it at a directory of videos, index them, and find every clip a person appears in — entirely offline, no cloud.
+Search your local video and photo library by face. Point it at a directory, index it, and find every clip or photo a person appears in — entirely offline, no cloud.
 
 ## Requirements
 
@@ -25,34 +25,68 @@ pip install -r requirements.txt
 ## Workflow
 
 ```
-index → (auto-cluster) → label → search → compile
+index → (auto-cluster) → label → search → compile / collage
 ```
 
-1. `python cli.py index /path/to/videos` — extract faces; incremental cluster runs automatically
+1. `python cli.py index /path/to/media` — extract faces from videos and photos; incremental cluster runs automatically
 2. Open `/label` — assign names to person clusters; merge duplicates; re-cluster if needed
-3. Open `/search` — search by name or upload a reference photo to find appearances
-4. Use the **Highlight Reel** panel on the search page to compile clips into a downloadable MP4
+3. Open `/search` — search by name or upload a reference photo to find appearances across videos and photos
+4. Use the **Highlight Reel** panel to compile video clips into a downloadable MP4, or the **Photo Collage** panel to generate a JPEG grid of photo appearances
 
 For the first run with no existing clusters, the auto-triggered incremental pass falls back to a full cluster automatically.
 
 ---
 
+## Pipeline
+
+```mermaid
+flowchart LR
+    subgraph Input
+        V[Videos]
+        P[Photos]
+    end
+    subgraph Indexer
+        FA[InsightFace\nface detection]
+    end
+    subgraph Storage
+        DB[(SQLite\nvideos · photos · persons)]
+        CH[(ChromaDB\nface embeddings)]
+    end
+    subgraph Cluster
+        CL[DBSCAN /\nIncremental]
+    end
+    subgraph Output
+        HL[Highlight reel\nMP4]
+        CO[Photo collage\nJPEG]
+    end
+
+    V & P --> FA
+    FA --> DB & CH
+    CH --> CL --> DB
+    DB & CH --> Search
+    Search --> HL & CO
+```
+
+---
+
 ## CLI Reference
 
-### Index a video directory
+### Index a media directory
 
 ```bash
-python cli.py index /path/to/videos
+python cli.py index /path/to/media
 ```
+
+Scans for both videos (`.mp4`, `.avi`, `.mov`, `.mkv`) and photos (`.jpg`, `.jpeg`, `.png`, `.heic`, `.heif`, `.webp`). Already-indexed files are skipped automatically.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--interval 2.0` | `1.0` | Seconds between sampled keyframes. Higher = faster, lower accuracy. |
+| `--interval 2.0` | `1.0` | Seconds between sampled keyframes (videos only). Higher = faster, lower accuracy. |
 | `--gpu` | off | Use CUDA for face inference (requires `onnxruntime-gpu`). |
 | `--no-cluster` | off | Skip the automatic incremental cluster pass after indexing. |
 | `--eps 0.6` | `0.6` | DBSCAN eps used by the auto-triggered incremental cluster. |
 
-After indexing, stale videos (deleted from disk since the last run) are pruned automatically, then an incremental cluster pass runs so new faces appear in `/label` without a separate step. Pass `--no-cluster` when batch-indexing several directories before a single cluster run.
+After indexing, stale media (deleted from disk since the last run) is pruned automatically, then an incremental cluster pass runs so new faces appear in `/label` without a separate step. Pass `--no-cluster` when batch-indexing several directories before a single cluster run.
 
 ### Cluster faces into person identities
 
@@ -76,14 +110,14 @@ After every cluster run, redundant face thumbnails are trimmed automatically —
 ### Maintenance commands
 
 ```bash
-python cli.py prune                   # remove stale data for videos deleted from disk
+python cli.py prune                   # remove stale data for media deleted from disk
 python cli.py prune --dry-run         # preview what would be removed
 
 python cli.py trim-thumbnails         # delete redundant face thumbnails (keeps label-page samples)
 python cli.py trim-thumbnails --dry-run
 
 python cli.py backfill-dates          # populate recorded_at for already-indexed videos
-python cli.py stats                   # video count, face count, labeled/unlabeled persons
+python cli.py stats                   # video/photo count, face count, labeled/unlabeled persons
 ```
 
 `prune` and `trim-thumbnails` run automatically as part of `index` and `cluster` respectively; these manual commands are for one-off use or verification with `--dry-run`.
@@ -104,9 +138,9 @@ Opens at `http://127.0.0.1:8000`. Options: `--host 0.0.0.0 --port 8000`.
 
 | Page | URL | Description |
 |---|---|---|
-| Index | `/` | Start indexing, watch live progress, see all indexed videos |
+| Index | `/` | Start indexing, watch live progress, see all indexed videos and photos |
 | Label | `/label` | Assign names to person clusters; merge duplicates; trigger re-clustering |
-| Search | `/search` | Search by name or reference photo; play results in-browser; compile highlight reels |
+| Search | `/search` | Search by name or reference photo; play results in-browser; compile highlight reels and collages |
 
 ### Label page
 
@@ -117,9 +151,13 @@ Opens at `http://127.0.0.1:8000`. Options: `--host 0.0.0.0 --port 8000`.
 
 ### Search page
 
-**Search by name** — type a labeled person's name (autocomplete from existing labels). Results are grouped by video, sorted by most appearances first. Each card shows three evenly-sampled scene frames, a scene count, and scene chips.
+**Search by name** — type a labeled person's name (autocomplete from existing labels). Results are split into a **Videos** tab and a **Photos** tab; the tab showing more results is active by default.
 
-**Search by photo** — upload any image containing a face. Results are sorted by match confidence (closest embedding distance first) and grouped by video the same way.
+**Search by photo** — upload any image containing a face. Results are ranked by match confidence (closest embedding distance first) across both videos and photos.
+
+**Videos tab** — results grouped by unique video, sorted by most appearances first. Each card shows three evenly-sampled scene frames, a scene count, and scene chips. The tab count reflects unique videos, not individual face detections.
+
+**Photos tab** — photo results shown as a scrollable grid. Click any card to open it in a full-screen lightbox with keyboard navigation (`←` / `→` to browse, `Esc` to close).
 
 **Scene chips** — each chip represents one detected scene. A brief isolated appearance shows as a single timestamp (`1:23`); a continuous stretch shows as a range (`0:00–5:52`). Clicking any chip opens the video at that moment.
 
@@ -133,7 +171,7 @@ Opens at `http://127.0.0.1:8000`. Options: `--host 0.0.0.0 --port 8000`.
 
 ### Highlight Reel
 
-Appears on the search page whenever named persons are in the results. Compiles all appearances for a person into a single downloadable MP4 using FFmpeg.
+Appears when named persons have video results. Compiles all appearances into a single downloadable MP4 using FFmpeg.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -144,6 +182,18 @@ Appears on the search page whenever named persons are in the results. Compiles a
 
 Recording date comes from the ffprobe container tag, filename date pattern, or file mtime — in that priority order. Run `python cli.py backfill-dates` to populate dates for already-indexed videos.
 
+### Photo Collage
+
+Appears when named persons have photo results. Compiles matching photos into a downloadable JPEG using a masonry grid layout.
+
+| Setting | Default | Description |
+|---|---|---|
+| Columns | 3 | Number of columns in the grid. |
+| Sort order | Earliest first | Sort photos by capture date ascending, descending, or randomly. |
+| Date captions | on | Overlay the capture date on each photo cell. |
+
+Capture date is read from EXIF `DateTimeOriginal`, falling back to file mtime.
+
 ---
 
 ## API
@@ -151,19 +201,24 @@ Recording date comes from the ffprobe container tag, filename date pattern, or f
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/index` | Start indexing a directory (`directory_path`, `interval_sec`) |
-| `GET` | `/api/index/status` | Indexing progress |
+| `GET` | `/api/index/status` | Indexing progress (videos + photos) |
 | `POST` | `/api/cluster` | Start a cluster job (`incremental`, `eps`, `min_samples`) |
 | `GET` | `/api/cluster/status` | Cluster job progress |
 | `GET` | `/api/persons` | List all person clusters (id, name, thumbnail, face_count) |
 | `POST` | `/api/persons/{id}/label` | Save a name for a person |
 | `POST` | `/api/persons/merge` | Merge two clusters (`source_id`, `target_id`) |
-| `GET` | `/api/search?name=Alice` | Find all appearances of a named person |
-| `POST` | `/api/search/photo` | Upload a face photo; returns ranked matches |
+| `GET` | `/api/search?name=Alice` | Find all appearances of a named person (videos + photos) |
+| `POST` | `/api/search/photo` | Upload a face photo; returns ranked matches across videos and photos |
 | `GET` | `/api/video/{id}` | Stream a video file with HTTP range request support |
 | `GET` | `/api/frame/{id}?t=47` | Extract a single JPEG frame at the given timestamp (cached) |
+| `GET` | `/api/photo/{id}` | Serve the original photo file |
+| `GET` | `/api/photo/{id}/preview?size=600` | Serve a downscaled JPEG preview (max 1200px) |
 | `POST` | `/api/compile` | Start a highlight reel job (`person_id`, `clip_duration_sec`, `merge_gap_sec`, `max_clips_per_video`, `order`) |
 | `GET` | `/api/compile/{job_id}` | Poll reel job status and progress |
 | `GET` | `/api/compile/{job_id}/download` | Download the finished MP4 |
+| `POST` | `/api/collage` | Start a collage job (`person_id`, `columns`, `sort`, `captions`) |
+| `GET` | `/api/collage/{job_id}` | Poll collage job status and progress |
+| `GET` | `/api/collage/{job_id}/download` | Download the finished JPEG |
 
 ---
 
@@ -175,23 +230,27 @@ multimedia-library-search/
 ├── cli.py                   # CLI entry point
 ├── app/
 │   ├── config.py            # Paths and constants
-│   ├── database.py          # SQLite (videos, persons tables)
+│   ├── database.py          # SQLite (videos, photos, persons tables)
 │   ├── chroma.py            # ChromaDB face embeddings store
-│   ├── indexer.py           # Frame extraction + InsightFace pipeline
+│   ├── indexer.py           # Video frame extraction + InsightFace pipeline
+│   ├── photo_indexer.py     # Photo loading + InsightFace pipeline
 │   ├── clusterer.py         # Full DBSCAN + incremental clusterer
 │   ├── compiler.py          # Scene merging + FFmpeg highlight reel
+│   ├── collage.py           # Masonry photo collage builder
 │   └── api/
 │       ├── index.py         # /api/index
 │       ├── cluster.py       # /api/cluster
 │       ├── persons.py       # /api/persons
 │       ├── search.py        # /api/search, /api/search/photo
 │       ├── video.py         # /api/video, /api/frame
-│       └── compile.py       # /api/compile
+│       ├── photo.py         # /api/photo
+│       ├── compile.py       # /api/compile
+│       └── collage.py       # /api/collage
 └── templates/
     ├── base.html            # Nav + shared layout
     ├── index.html           # Indexing page
     ├── label.html           # Labeling + clustering page
-    └── search.html          # Search page with custom video player
+    └── search.html          # Search page with video player and photo lightbox
 ```
 
 Generated at runtime (gitignored):
@@ -199,7 +258,7 @@ Generated at runtime (gitignored):
 ```
 data/                # SQLite DB + ChromaDB files
 static/thumbnails/   # Face crop PNGs
-output/              # Compiled highlight reels
+output/              # Compiled highlight reels and photo collages
 ```
 
 ## Data
@@ -213,3 +272,4 @@ All indexed data lives in `data/` and `static/thumbnails/`. Delete those directo
 - [x] Phase 2.5 — Progressive incremental clustering
 - [x] Phase 3 — Search by name or reference photo + in-browser playback
 - [x] Phase 4 — Highlight reel compilation (FFmpeg clip extraction + concat)
+- [x] Phase 5 — Photo library support (indexing, search, collage)

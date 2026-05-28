@@ -43,6 +43,37 @@
   .save-ok { color: #198754; font-size: 0.8rem; }
   .save-status { min-height: 1.1em; font-size: 0.8rem; }
   .merge-label { font-size: 0.82rem; display: flex; align-items: center; gap: 0.3rem; color: #6c757d; }
+  .noise-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 0.75rem;
+  }
+  .noise-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.6rem;
+    font-size: 0.8rem;
+  }
+  .noise-card img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 5px;
+    background: #dee2e6;
+  }
+  .noise-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    background: #e9ecef;
+    color: #495057;
+  }
+  .noise-badge.photo { background: #cfe2ff; color: #084298; }
   .merge-bar {
     position: sticky;
     bottom: 1rem;
@@ -68,59 +99,74 @@
   {% else %}
   <p class="muted">No persons clustered yet — use the controls below or run <code>python cli.py cluster</code>.</p>
   {% endif %}
+  {% if unlabeled_count %}
+  <p class="muted" style="margin-top:0.4rem">
+    <strong>{{ unlabeled_count }} unclustered face{{ 's' if unlabeled_count != 1 else '' }}</strong>
+    not yet assigned to any person — run <em>Cluster Unlabeled</em> below to process them.
+    If no new persons appear, try raising <em>eps</em>.
+  </p>
+  {% endif %}
 </div>
 
 <div class="card" id="cluster-card">
   <h2>Clustering</h2>
   <div style="display:flex;gap:2rem;flex-wrap:wrap">
 
-    <div style="flex:1;min-width:220px">
+    <div style="flex:1;min-width:260px">
       <h3>Cluster Unlabeled Faces</h3>
       <p class="muted" style="margin:0 0 0.75rem">Assigns new faces to existing persons and discovers new ones. Existing labels are preserved.</p>
       <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
         <div>
           <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
-            eps
-            <span class="muted" style="font-weight:400"> — grouping radius</span>
+            eps video
           </label>
-          <input type="number" id="eps-inc" value="0.6" min="0.1" step="0.05" style="width:75px"
-                 title="Euclidean distance threshold on L2-normed embeddings. Lower = stricter (more, smaller clusters). Higher = looser (fewer, larger clusters). Typical range: 0.4–0.9.">
-          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">lower = stricter</div>
+          <input type="number" id="eps-video-inc" value="0.7" min="0.1" step="0.05" style="width:70px"
+                 title="Threshold for video faces — tighter, since consecutive frames are similar.">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">videos</div>
+        </div>
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
+            eps photo
+          </label>
+          <input type="number" id="eps-photo-inc" value="1.0" min="0.1" step="0.05" style="width:70px"
+                 title="Threshold for photo faces — looser, since photos of the same person vary more.">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">photos</div>
         </div>
         <div>
           <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
             min-samples
-            <span class="muted" style="font-weight:400"> — noise threshold</span>
           </label>
-          <input type="number" id="ms-inc" value="3" min="1" style="width:65px"
-                 title="Minimum number of faces required to form a person cluster. Faces in groups smaller than this are marked as noise (unlabeled). Lower = fewer faces needed per person.">
-          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">min faces per person</div>
+          <input type="number" id="ms-inc" value="3" min="1" style="width:60px">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">min faces/person</div>
         </div>
         <button onclick="startCluster(true)" style="margin-bottom:1.3rem">Cluster Unlabeled</button>
       </div>
     </div>
 
-    <div style="flex:1;min-width:220px;padding-left:2rem;border-left:1px solid #e9ecef">
+    <div style="flex:1;min-width:260px;padding-left:2rem;border-left:1px solid #e9ecef">
       <h3>Full Re-cluster</h3>
       <p class="muted" style="margin:0 0 0.75rem">Runs DBSCAN on all faces from scratch. <strong>All existing labels will be lost.</strong></p>
       <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
         <div>
           <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
-            eps
-            <span class="muted" style="font-weight:400"> — grouping radius</span>
+            eps video
           </label>
-          <input type="number" id="eps-full" value="0.6" min="0.1" step="0.05" style="width:75px"
-                 title="Euclidean distance threshold on L2-normed embeddings. Lower = stricter (more, smaller clusters). Higher = looser (fewer, larger clusters). Typical range: 0.4–0.9.">
-          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">lower = stricter</div>
+          <input type="number" id="eps-video-full" value="0.7" min="0.1" step="0.05" style="width:70px">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">videos</div>
+        </div>
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
+            eps photo
+          </label>
+          <input type="number" id="eps-photo-full" value="1.0" min="0.1" step="0.05" style="width:70px">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">photos</div>
         </div>
         <div>
           <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.2rem">
             min-samples
-            <span class="muted" style="font-weight:400"> — noise threshold</span>
           </label>
-          <input type="number" id="ms-full" value="3" min="1" style="width:65px"
-                 title="Minimum number of faces required to form a person cluster. Faces in groups smaller than this are marked as noise (unlabeled). Lower = fewer faces needed per person.">
-          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">min faces per person</div>
+          <input type="number" id="ms-full" value="3" min="1" style="width:60px">
+          <div class="muted" style="font-size:0.75rem;margin-top:0.15rem">min faces/person</div>
         </div>
         <button onclick="startCluster(false)" style="background:#dc3545;margin-bottom:1.3rem">Re-cluster All</button>
       </div>
@@ -181,20 +227,121 @@
   <button onclick="doMerge()">Merge Selected</button>
   <button class="btn-cancel" onclick="clearMerge()">Cancel</button>
 </div>
+{% endif %}
+
+{% set total_unlabeled = (visible_faces|length) + (hidden_faces|length) %}
+{% if total_unlabeled > 0 %}
+<div class="card" id="noise-card">
+  <h2 style="cursor:pointer;user-select:none" onclick="toggleNoise()">
+    Unclustered Faces
+    <span class="muted" style="font-weight:400;font-size:0.9rem">({{ total_unlabeled }})</span>
+    <span id="noise-chevron" style="font-size:0.8rem;margin-left:0.4rem">▶</span>
+  </h2>
+  <div id="noise-body" class="hidden">
+  <p class="muted">These faces were not assigned to any person cluster.
+    Click <em>Create Person</em> to promote a face to a new person entry,
+    or run <em>Cluster Unlabeled</em> above (video eps&nbsp;0.7 / photo eps&nbsp;1.0 are good starting points).
+  </p>
+  <div class="noise-grid" id="noise-visible">
+    {% for face in visible_faces %}
+    <div class="noise-card card" id="ncard-{{ loop.index }}">
+      <img src="/static/{{ face.thumbnail_path }}" alt=""
+           onerror="this.parentElement.style.display='none'">
+      <span class="noise-badge {% if face.media_type == 'photo' %}photo{% endif %}">
+        {{ face.media_type }}{% if face.det_score is not none %} · {{ "%.2f"|format(face.det_score) }}{% endif %}
+      </span>
+      <div id="npromote-{{ loop.index }}">
+        <button style="width:100%;font-size:0.75rem;padding:0.25rem 0.5rem"
+                onclick="promoteFace('{{ face.id }}', {{ loop.index }})">
+          Create Person
+        </button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if hidden_faces %}
+  <div id="noise-hidden" class="noise-grid hidden" style="margin-top:0.75rem">
+    {% for face in hidden_faces %}
+    {% set hidx = loop.index + visible_faces|length %}
+    <div class="noise-card card" id="ncard-{{ hidx }}">
+      <img src="/static/{{ face.thumbnail_path }}" alt=""
+           onerror="this.parentElement.style.display='none'">
+      <span class="noise-badge">
+        {{ face.media_type }} · {{ "%.2f"|format(face.det_score) }}
+      </span>
+      <div id="npromote-{{ hidx }}">
+        <button style="width:100%;font-size:0.75rem;padding:0.25rem 0.5rem"
+                onclick="promoteFace('{{ face.id }}', {{ hidx }})">
+          Create Person
+        </button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <button id="show-hidden-btn" style="margin-top:0.75rem;background:#6c757d;font-size:0.8rem"
+          onclick="toggleHidden()">
+    Show {{ hidden_faces|length }} low-confidence face{{ 's' if hidden_faces|length != 1 else '' }}
+  </button>
+  {% endif %}
+  </div>{# end noise-body #}
+</div>
+{% endif %}
 
 <script>
+function toggleNoise() {
+  const body = document.getElementById('noise-body');
+  const chev = document.getElementById('noise-chevron');
+  if (!body) return;
+  const open = !body.classList.contains('hidden');
+  body.classList.toggle('hidden', open);
+  chev.textContent = open ? '▶' : '▼';
+}
+
+function toggleHidden() {
+  const el = document.getElementById('noise-hidden');
+  const btn = document.getElementById('show-hidden-btn');
+  if (!el) return;
+  if (el.classList.contains('hidden')) {
+    el.classList.remove('hidden');
+    btn.textContent = btn.textContent.replace('Show', 'Hide');
+  } else {
+    el.classList.add('hidden');
+    btn.textContent = btn.textContent.replace('Hide', 'Show');
+  }
+}
+
+async function promoteFace(faceId, idx) {
+  const btn = document.querySelector(`#ncard-${idx} button`);
+  btn.disabled = true;
+  btn.textContent = '…';
+  const resp = await fetch(`/api/faces/${faceId}/promote`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'name=',
+  });
+  if (resp.ok) {
+    document.getElementById(`npromote-${idx}`).innerHTML = '<span class="save-ok">&#10003; Created — reloading…</span>';
+    setTimeout(() => location.reload(), 1000);
+  } else {
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+  }
+}
+
 (function () {
   /* ── Clustering ── */
   let clusterTimer = null;
 
   window.startCluster = async function (incremental) {
     if (!incremental && !confirm('Full re-cluster will erase all existing labels. Continue?')) return;
-    const eps       = parseFloat(document.getElementById(incremental ? 'eps-inc'  : 'eps-full').value) || 0.6;
-    const minSamples = parseInt(document.getElementById(incremental ? 'ms-inc' : 'ms-full').value)   || 3;
+    const sfx        = incremental ? 'inc' : 'full';
+    const epsVideo   = parseFloat(document.getElementById('eps-video-' + sfx).value) || 0.7;
+    const epsPhoto   = parseFloat(document.getElementById('eps-photo-' + sfx).value) || 1.0;
+    const minSamples = parseInt(document.getElementById('ms-' + sfx).value) || 3;
     const resp = await fetch('/api/cluster', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({incremental, eps, min_samples: minSamples}),
+      body: JSON.stringify({incremental, eps_video: epsVideo, eps_photo: epsPhoto, min_samples: minSamples}),
     });
     const data = await resp.json();
     if (data.status === 'already_running') { showCS('Already running…', false); return; }
@@ -240,6 +387,7 @@
   /* ── Merge ── */
   const bar = document.getElementById('merge-bar');
   const info = document.getElementById('merge-info');
+  if (!bar) return;
 
   function selected() {
     return [...document.querySelectorAll('.merge-check:checked')];
@@ -278,5 +426,4 @@
   };
 }());
 </script>
-{% endif %}
 {% endblock %}

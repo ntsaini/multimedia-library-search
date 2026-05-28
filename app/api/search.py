@@ -31,6 +31,16 @@ def _fetch_video_map(conn, video_ids: list) -> dict:
     return {r["id"]: {"filename": r["filename"], "duration_sec": r["duration_sec"]} for r in rows}
 
 
+def _fetch_photo_map(conn, photo_ids: list) -> dict:
+    if not photo_ids:
+        return {}
+    placeholders = ",".join("?" * len(photo_ids))
+    rows = conn.execute(
+        f"SELECT id, filename, taken_at FROM photos WHERE id IN ({placeholders})", photo_ids
+    ).fetchall()
+    return {r["id"]: {"filename": r["filename"], "taken_at": r["taken_at"]} for r in rows}
+
+
 def _dedup_by_minute(hits: list) -> list:
     """Keep one hit per (video_id, minute) to avoid flooding results."""
     seen: set = set()
@@ -43,14 +53,46 @@ def _dedup_by_minute(hits: list) -> list:
     return out
 
 
+def _dedup_photos(hits: list) -> list:
+    """Keep one hit per photo_id."""
+    seen: set = set()
+    out = []
+    for h in hits:
+        pid = h["photo_id"]
+        if pid not in seen:
+            seen.add(pid)
+            out.append(h)
+    return out
+
+
+def _dedup_photos_best(hits: list) -> list:
+    """Keep the lowest-distance hit per photo_id (for photo-upload search)."""
+    best: dict = {}
+    for h in hits:
+        pid = h["photo_id"]
+        if pid not in best or h["distance"] < best[pid]["distance"]:
+            best[pid] = h
+    return list(best.values())
+
+
+def _split_metas(metas: list) -> tuple[list, list]:
+    """Split face metadata into (video_metas, photo_metas)."""
+    videos, photos = [], []
+    for m in metas:
+        if m.get("media_type") == "photo":
+            photos.append(m)
+        else:
+            videos.append(m)
+    return videos, photos
+
+
 @router.get("/api/search")
 def search_by_name(name: str = ""):
     name = name.strip()
     if not name:
-        return []
+        return {"videos": [], "photos": []}
 
     conn = get_connection()
-    # Exact match first, then partial
     rows = conn.execute(
         "SELECT id, name FROM persons WHERE name IS NOT NULL AND LOWER(name) LIKE LOWER(?)",
         (f"%{name}%",),
@@ -58,44 +100,61 @@ def search_by_name(name: str = ""):
 
     if not rows:
         conn.close()
-        return []
+        return {"videos": [], "photos": []}
+
+    person_name_map = {r["id"]: r["name"] for r in rows}
+    person_ids = list(person_name_map)
 
     collection = get_collection()
-    hits = []
+    result = collection.get(
+        where={"person_id": {"$in": person_ids}},
+        include=["metadatas"],
+    )
 
-    for person_row in rows:
-        person_id = person_row["id"]
-        person_name = person_row["name"]
+    video_hits: list = []
+    photo_hits: list = []
 
-        result = collection.get(
-            where={"person_id": {"$eq": person_id}},
-            include=["metadatas"],
-        )
-        if not result["ids"]:
-            continue
+    if result["ids"]:
+        video_metas, photo_metas = _split_metas(result["metadatas"])
 
-        video_ids = list({m.get("video_id") for m in result["metadatas"]})
+        video_ids = list({m.get("video_id") for m in video_metas if m.get("video_id", -1) != -1})
         video_map = _fetch_video_map(conn, video_ids)
-
-        for meta in result["metadatas"]:
+        for meta in video_metas:
             vid_id = meta.get("video_id")
             vinfo = video_map.get(vid_id) or {}
-            hits.append(
-                {
-                    "video_id": vid_id,
-                    "filename": vinfo.get("filename", "unknown"),
-                    "duration_sec": vinfo.get("duration_sec"),
-                    "timestamp_sec": meta.get("timestamp_sec"),
-                    "thumbnail_path": meta.get("thumbnail_path"),
-                    "person_name": person_name,
-                    "person_id": person_id,
-                }
-            )
+            video_hits.append({
+                "video_id": vid_id,
+                "filename": vinfo.get("filename", "unknown"),
+                "duration_sec": vinfo.get("duration_sec"),
+                "timestamp_sec": meta.get("timestamp_sec"),
+                "thumbnail_path": meta.get("thumbnail_path"),
+                "person_name": person_name_map.get(meta.get("person_id")),
+                "person_id": meta.get("person_id"),
+            })
+
+        photo_ids = list({m.get("photo_id") for m in photo_metas if m.get("photo_id") is not None})
+        photo_map = _fetch_photo_map(conn, photo_ids)
+        for meta in photo_metas:
+            ph_id = meta.get("photo_id")
+            pinfo = photo_map.get(ph_id) or {}
+            photo_hits.append({
+                "photo_id": ph_id,
+                "filename": pinfo.get("filename", "unknown"),
+                "taken_at": pinfo.get("taken_at"),
+                "thumbnail_path": meta.get("thumbnail_path"),
+                "person_name": person_name_map.get(meta.get("person_id")),
+                "person_id": meta.get("person_id"),
+            })
 
     conn.close()
-    hits.sort(key=lambda h: (h["video_id"], h["timestamp_sec"] or 0))
-    hits = _dedup_by_minute(hits)
-    return hits[:200]
+
+    video_hits.sort(key=lambda h: (h["video_id"], h["timestamp_sec"] or 0))
+    video_hits = _dedup_by_minute(video_hits)
+
+    photo_hits = _dedup_photos(photo_hits)
+    photo_hits.sort(key=lambda h: (h["taken_at"] or "", h["filename"]))
+
+    return {"videos": video_hits[:200], "photos": photo_hits[:200]}
 
 
 @router.post("/api/search/photo")
@@ -116,11 +175,11 @@ async def search_by_photo(file: UploadFile = File(...)):
     collection = get_collection()
     total = collection.count()
     if total == 0:
-        return []
+        return {"videos": [], "photos": []}
 
     results = collection.query(
         query_embeddings=[embedding],
-        n_results=min(50, total),
+        n_results=min(100, total),
         include=["metadatas", "distances"],
     )
 
@@ -128,35 +187,63 @@ async def search_by_photo(file: UploadFile = File(...)):
     distances = results["distances"][0]
 
     conn = get_connection()
-    video_ids = list({m.get("video_id") for m in metadatas})
+
+    video_metas_dist = [(m, d) for m, d in zip(metadatas, distances)
+                        if d <= 0.5 and m.get("media_type") != "photo"]
+    photo_metas_dist = [(m, d) for m, d in zip(metadatas, distances)
+                        if d <= 0.5 and m.get("media_type") == "photo"]
+
+    # Videos
+    video_ids = list({m.get("video_id") for m, _ in video_metas_dist if m.get("video_id", -1) != -1})
     video_map = _fetch_video_map(conn, video_ids)
 
-    person_ids = list({m.get("person_id", "unlabeled") for m in metadatas})
-    placeholders = ",".join("?" * len(person_ids))
+    all_ids = list({m.get("person_id", "unlabeled") for m, d in zip(metadatas, distances) if d <= 0.5})
+    placeholders = ",".join("?" * len(all_ids))
     person_rows = conn.execute(
-        f"SELECT id, name FROM persons WHERE id IN ({placeholders})", person_ids
-    ).fetchall()
+        f"SELECT id, name FROM persons WHERE id IN ({placeholders})", all_ids
+    ).fetchall() if all_ids else []
     person_map = {r["id"]: r["name"] for r in person_rows}
+
+    # Photos
+    photo_ids = list({m.get("photo_id") for m, _ in photo_metas_dist if m.get("photo_id") is not None})
+    photo_map = _fetch_photo_map(conn, photo_ids)
+
     conn.close()
 
-    hits = []
-    for meta, dist in zip(metadatas, distances):
-        if dist > 0.5:
-            continue
+    video_hits = []
+    for meta, dist in video_metas_dist:
         vid_id = meta.get("video_id")
         person_id = meta.get("person_id", "unlabeled")
         vinfo = video_map.get(vid_id) or {}
-        hits.append(
-            {
-                "video_id": vid_id,
-                "filename": vinfo.get("filename", "unknown"),
-                "duration_sec": vinfo.get("duration_sec"),
-                "timestamp_sec": meta.get("timestamp_sec"),
-                "thumbnail_path": meta.get("thumbnail_path"),
-                "distance": round(float(dist), 3),
-                "person_name": person_map.get(person_id),
-                "person_id": person_id if person_id != "unlabeled" else None,
-            }
-        )
+        video_hits.append({
+            "video_id": vid_id,
+            "filename": vinfo.get("filename", "unknown"),
+            "duration_sec": vinfo.get("duration_sec"),
+            "timestamp_sec": meta.get("timestamp_sec"),
+            "thumbnail_path": meta.get("thumbnail_path"),
+            "distance": round(float(dist), 3),
+            "person_name": person_map.get(person_id),
+            "person_id": person_id if person_id != "unlabeled" else None,
+        })
 
-    return hits
+    photo_hits_raw = []
+    for meta, dist in photo_metas_dist:
+        ph_id = meta.get("photo_id")
+        person_id = meta.get("person_id", "unlabeled")
+        pinfo = photo_map.get(ph_id) or {}
+        photo_hits_raw.append({
+            "photo_id": ph_id,
+            "filename": pinfo.get("filename", "unknown"),
+            "taken_at": pinfo.get("taken_at"),
+            "thumbnail_path": meta.get("thumbnail_path"),
+            "distance": round(float(dist), 3),
+            "person_name": person_map.get(person_id),
+            "person_id": person_id if person_id != "unlabeled" else None,
+        })
+
+    video_hits = _dedup_by_minute(video_hits)
+
+    photo_hits = _dedup_photos_best(photo_hits_raw)
+    photo_hits.sort(key=lambda h: h["distance"])
+
+    return {"videos": video_hits, "photos": photo_hits}
