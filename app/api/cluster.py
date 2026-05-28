@@ -16,16 +16,21 @@ cluster_progress: dict = {
 
 class ClusterRequest(BaseModel):
     incremental: bool = True
-    eps: float = 0.6
+    eps_video: float = 0.7
+    eps_photo: float = 1.0
     min_samples: int = 3
 
 
-def _run(incremental: bool, eps: float, min_samples: int) -> None:
+def _run(incremental: bool, eps_video: float, eps_photo: float, min_samples: int) -> None:
     try:
         if incremental:
-            result = run_incremental_clusterer(eps=eps, min_samples=min_samples)
+            result = run_incremental_clusterer(
+                eps_video=eps_video, eps_photo=eps_photo, min_samples=min_samples
+            )
         else:
-            result = run_clusterer(eps=eps, min_samples=min_samples)
+            result = run_clusterer(
+                eps_video=eps_video, eps_photo=eps_photo, min_samples=min_samples
+            )
         cluster_progress["result"] = result
         cluster_progress["status"] = "done"
     except Exception as exc:
@@ -45,7 +50,12 @@ def start_cluster(req: ClusterRequest):
     })
     threading.Thread(
         target=_run,
-        kwargs={"incremental": req.incremental, "eps": req.eps, "min_samples": req.min_samples},
+        kwargs={
+            "incremental": req.incremental,
+            "eps_video": req.eps_video,
+            "eps_photo": req.eps_photo,
+            "min_samples": req.min_samples,
+        },
         daemon=True,
     ).start()
     return {"status": "started"}

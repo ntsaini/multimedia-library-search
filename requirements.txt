@@ -9,3 +9,4 @@ opencv-python-headless
 numpy
 scikit-learn
 tqdm
+Pillow                   # EXIF date extraction + photo collage composition

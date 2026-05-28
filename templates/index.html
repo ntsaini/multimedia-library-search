@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Index Videos{% endblock %}
+{% block title %}Index Media{% endblock %}
 {% block content %}
 
 <div class="card">
-    <h2>Index Videos</h2>
-    <p class="muted">Scan a local directory for video files and extract face embeddings. Supported: mp4, avi, mov, mkv.</p>
+    <h2>Index Media</h2>
+    <p class="muted">Scan a local directory for videos and photos and extract face embeddings. Videos: mp4, avi, mov, mkv. Photos: jpg, png, heic, heif, webp.</p>
     <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
         <div style="flex:1;min-width:200px">
             <label for="dir-input" style="display:block;margin-bottom:0.3rem;font-size:0.85rem;font-weight:500">Directory path</label>
@@ -24,12 +24,20 @@
     <div id="prog-text" class="muted" style="margin-top:0.4rem">Starting…</div>
 </div>
 
+{% if videos or photos %}
+<div id="reindex-bar" class="card hidden" style="align-items:center;justify-content:space-between;padding:0.6rem 1rem;background:#fff3cd;border:1px solid #ffc107">
+    <span id="reindex-count" style="font-weight:500"></span>
+    <button onclick="reindexSelected()" style="background:#e6a817">Reindex selected</button>
+</div>
+{% endif %}
+
 {% if videos %}
 <div class="card">
     <h2>Indexed Videos <span class="muted" style="font-weight:400;font-size:0.9rem">({{ videos|length }})</span></h2>
     <table style="width:100%;border-collapse:collapse;font-size:0.875rem">
         <thead>
             <tr style="border-bottom:2px solid #e9ecef;text-align:left">
+                <th style="padding:0.4rem 0.6rem;width:2rem"><input type="checkbox" id="sel-all-videos" onchange="toggleAll('video', this.checked)" /></th>
                 <th style="padding:0.4rem 0.6rem">File</th>
                 <th style="padding:0.4rem 0.6rem">Path</th>
                 <th style="padding:0.4rem 0.6rem;white-space:nowrap">Duration</th>
@@ -39,6 +47,7 @@
         <tbody>
             {% for v in videos %}
             <tr style="border-bottom:1px solid #f1f3f5">
+                <td style="padding:0.4rem 0.6rem"><input type="checkbox" class="sel-item" data-path="{{ v.path }}" onchange="updateReindexBar()" /></td>
                 <td style="padding:0.4rem 0.6rem;font-weight:500">{{ v.filename }}</td>
                 <td style="padding:0.4rem 0.6rem;color:#6c757d;word-break:break-all">{{ v.path }}</td>
                 <td style="padding:0.4rem 0.6rem;white-space:nowrap">
@@ -58,8 +67,89 @@
 </div>
 {% endif %}
 
+{% if photos %}
+<div class="card">
+    <h2>Indexed Photos <span class="muted" style="font-weight:400;font-size:0.9rem">({{ photos|length }})</span></h2>
+    <table style="width:100%;border-collapse:collapse;font-size:0.875rem">
+        <thead>
+            <tr style="border-bottom:2px solid #e9ecef;text-align:left">
+                <th style="padding:0.4rem 0.6rem;width:2rem"><input type="checkbox" id="sel-all-photos" onchange="toggleAll('photo', this.checked)" /></th>
+                <th style="padding:0.4rem 0.6rem">File</th>
+                <th style="padding:0.4rem 0.6rem">Path</th>
+                <th style="padding:0.4rem 0.6rem;white-space:nowrap">Taken at</th>
+                <th style="padding:0.4rem 0.6rem;white-space:nowrap">Indexed at</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in photos %}
+            <tr style="border-bottom:1px solid #f1f3f5">
+                <td style="padding:0.4rem 0.6rem"><input type="checkbox" class="sel-item" data-path="{{ p.path }}" onchange="updateReindexBar()" /></td>
+                <td style="padding:0.4rem 0.6rem;font-weight:500">{{ p.filename }}</td>
+                <td style="padding:0.4rem 0.6rem;color:#6c757d;word-break:break-all">{{ p.path }}</td>
+                <td style="padding:0.4rem 0.6rem;white-space:nowrap;color:#6c757d">{{ p.taken_at or '—' }}</td>
+                <td style="padding:0.4rem 0.6rem;white-space:nowrap;color:#6c757d">{{ p.indexed_at }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 <script>
 let pollTimer = null;
+
+function updateReindexBar() {
+    const checked = [...document.querySelectorAll('.sel-item:checked')];
+    const bar = document.getElementById('reindex-bar');
+    if (!bar) return;
+    if (checked.length > 0) {
+        bar.classList.remove('hidden');
+        bar.style.display = 'flex';
+        document.getElementById('reindex-count').textContent =
+            `${checked.length} item${checked.length !== 1 ? 's' : ''} selected`;
+    } else {
+        bar.classList.add('hidden');
+    }
+}
+
+function toggleAll(type, checked) {
+    document.querySelectorAll('.sel-item').forEach(cb => {
+        cb.checked = checked;
+    });
+    // Sync the other "select all" box if both exist
+    const other = type === 'video'
+        ? document.getElementById('sel-all-photos')
+        : document.getElementById('sel-all-videos');
+    if (other) other.checked = checked;
+    updateReindexBar();
+}
+
+async function reindexSelected() {
+    const paths = [...document.querySelectorAll('.sel-item:checked')].map(cb => cb.dataset.path);
+    if (!paths.length) return;
+    const label = paths.length === 1 ? paths[0].split('/').pop() : `${paths.length} files`;
+    if (!confirm(`Reindex ${label}?\n\nThis will re-extract faces for the selected item(s) and recluster.`)) return;
+
+    const interval = parseFloat(document.getElementById('interval-input')?.value) || 1.0;
+    const resp = await fetch('/api/index/force', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({paths, interval_sec: interval}),
+    });
+    const data = await resp.json();
+    if (data.status === 'already_running') {
+        alert('Indexing is already in progress.');
+    }
+    // Uncheck all and hide bar
+    document.querySelectorAll('.sel-item').forEach(cb => cb.checked = false);
+    ['sel-all-videos', 'sel-all-photos'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.checked = false;
+    });
+    updateReindexBar();  // hides bar via classList.add('hidden')
+    showPanel();
+    schedulePoll();
+}
 
 async function startIndexing() {
     const dir = document.getElementById('dir-input').value.trim();
@@ -100,22 +190,42 @@ async function pollStatus() {
         return;
     }
 
-    const pct = Math.round((d.progress || 0) * 100);
+    // Blend per-video frame progress into the overall bar so it moves smoothly
+    let progress = d.progress || 0;
+    if (d.status === 'running' && d.frames_total > 0 && (d.videos_total + d.photos_total) > 0) {
+        const frameContrib = (d.frames_done / d.frames_total) / (d.videos_total + d.photos_total);
+        progress = Math.min(1, progress + frameContrib);
+    }
+    const pct = Math.round(progress * 100);
     document.getElementById('prog-bar').style.width = pct + '%';
 
     let text = '';
     if (d.status === 'idle') {
         text = 'Idle.';
     } else if (d.status === 'running') {
-        text = `${d.videos_done} / ${d.videos_total} videos`;
+        const inPhotoPhase = d.videos_total > 0 && d.videos_done >= d.videos_total && d.photos_total > 0;
+        const photosOnly   = d.videos_total === 0 && d.photos_total > 0;
+
+        if (inPhotoPhase || photosOnly) {
+            text = `Photos: ${d.photos_done} / ${d.photos_total}`;
+        } else {
+            text = `Videos: ${d.videos_done} / ${d.videos_total}`;
+            if (d.frames_total > 0) {
+                text += ` &mdash; frame ${d.frames_done} / ${d.frames_total}`;
+            }
+        }
         if (d.current_video) text += ` &mdash; <strong>${d.current_video}</strong>`;
         text += ` &mdash; ${(d.faces_found || 0).toLocaleString()} faces`;
-        if (d.eta_sec != null) {
+        if (!inPhotoPhase && d.eta_sec != null) {
             const m = Math.floor(d.eta_sec / 60), s = Math.floor(d.eta_sec % 60);
             text += ` &mdash; ETA ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
         }
     } else if (d.status === 'done') {
-        text = `Done &mdash; ${d.videos_done} videos indexed, ${(d.faces_found || 0).toLocaleString()} faces found. <a href="/label">Go to Label &rarr;</a>`;
+        const parts = [];
+        if (d.videos_done > 0) parts.push(`${d.videos_done} video${d.videos_done !== 1 ? 's' : ''}`);
+        if (d.photos_done > 0) parts.push(`${d.photos_done} photo${d.photos_done !== 1 ? 's' : ''}`);
+        const summary = parts.length ? parts.join(', ') : 'nothing new';
+        text = `Done &mdash; ${summary} indexed, ${(d.faces_found || 0).toLocaleString()} faces found. <a href="/label">Go to Label &rarr;</a>`;
         clearInterval(pollTimer);
     } else if (d.status === 'error') {
         text = `<span style="color:#dc3545">Error: ${d.error}</span>`;

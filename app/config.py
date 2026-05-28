@@ -16,3 +16,7 @@ MODEL_NAME_DEFAULT = "buffalo_sc"
 MODEL_NAME_HIGH    = "buffalo_l"
 
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp"}
+
+COLLAGE_CELL_SIZE = 400   # px — each photo cell is resized to this square
+COLLAGE_PADDING   = 8     # px — gutter between cells and canvas border

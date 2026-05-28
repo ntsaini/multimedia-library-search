@@ -12,9 +12,48 @@
   .file-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   #photo-input { flex: 1; min-width: 0; font-size: 0.85rem; }
 
+  /* ── Tabs ── */
+  .tab-bar { display: flex; gap: 0; border-bottom: 1px solid #e9ecef; margin-bottom: 1rem; }
+  .tab-btn {
+    background: none; border: none;
+    border-bottom: 2px solid transparent;
+    padding: 0.4rem 1.1rem; cursor: pointer;
+    font-size: 0.88rem; color: #6c757d;
+    margin-bottom: -1px; white-space: nowrap;
+  }
+  .tab-btn.active { border-bottom-color: #4361ee; color: #212529; font-weight: 600; }
+
   /* ── Result rows (one per video) ── */
   .result-list { display: flex; flex-direction: column; gap: 0.6rem; }
   .result-row { display: flex; flex-direction: column; gap: 0.55rem; padding: 0.75rem; }
+
+  /* ── Photo grid ── */
+  .photo-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+  .photo-card {
+    width: 160px; display: flex; flex-direction: column;
+    gap: 0.3rem; padding: 0.5rem; cursor: default;
+  }
+  .photo-thumb-wrap {
+    position: relative; width: 100%;
+    background: #dee2e6; border-radius: 4px; overflow: hidden;
+    max-height: 260px;
+  }
+  .photo-thumb-wrap img {
+    width: 100%; height: auto; display: block;
+    object-fit: contain; max-height: 260px;
+  }
+  .photo-view-btn {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0); color: transparent;
+    font-size: 0.8rem; font-weight: 600; border: none; cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .photo-thumb-wrap:hover .photo-view-btn {
+    background: rgba(0,0,0,.45); color: #fff;
+  }
+  .photo-card-name { font-size: 0.78rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .photo-card-meta { font-size: 0.72rem; color: #6c757d; }
 
   /* Three frame previews side by side */
   .frame-strip {
@@ -232,7 +271,13 @@
   <div class="card">
     <h2 id="results-header"></h2>
 
-    <!-- Highlight reel panel — shown when named persons are in results -->
+    <!-- Tabs — hidden when only one media type has results -->
+    <div id="results-tabs" class="tab-bar hidden">
+      <button id="tab-videos" class="tab-btn active" onclick="switchTab('videos')">Videos</button>
+      <button id="tab-photos" class="tab-btn" onclick="switchTab('photos')">Photos</button>
+    </div>
+
+    <!-- Highlight reel panel — shown when named persons are in video results -->
     <div id="compile-section" class="hidden"
          style="margin-bottom:1.1rem;padding-bottom:1.1rem;border-bottom:1px solid #e9ecef">
       <h3 style="margin:0 0 0.3rem">Highlight Reel</h3>
@@ -271,6 +316,42 @@
       <div id="compile-progress"></div>
     </div>
 
+    <!-- Photo collage panel — shown when named persons are in photo results -->
+    <div id="collage-section" class="hidden"
+         style="margin-bottom:1.1rem;padding-bottom:1.1rem;border-bottom:1px solid #e9ecef">
+      <h3 style="margin:0 0 0.3rem">Photo Collage</h3>
+      <p class="muted" style="margin:0 0 0.75rem">
+        Compile matching photos into a downloadable PNG grid.
+      </p>
+      <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap;margin-bottom:0.75rem">
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.15rem">Columns</label>
+          <select id="co-cols" style="width:72px">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-size:0.8rem;font-weight:500;margin-bottom:0.15rem">Sort order</label>
+          <select id="co-sort" style="width:140px">
+            <option value="asc">Earliest first</option>
+            <option value="desc">Latest first</option>
+            <option value="random">Random</option>
+          </select>
+        </div>
+        <div style="align-self:center;padding-top:1.2rem">
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.8rem;font-weight:500;cursor:pointer">
+            <input type="checkbox" id="co-captions" checked> Date captions
+          </label>
+        </div>
+        <div style="align-self:flex-end;padding-bottom:2px">
+          <div id="collage-btns"></div>
+        </div>
+      </div>
+      <div id="collage-progress"></div>
+    </div>
+
     <div id="results-list"></div>
   </div>
 </div>
@@ -299,6 +380,28 @@
   </div>
 </div>
 
+<!-- Photo lightbox modal -->
+<div class="modal-overlay hidden" id="photo-modal">
+  <div class="modal-box" style="max-width:min(90vw,960px);text-align:center">
+    <button class="modal-close" onclick="closeLightbox()">&#x2715;</button>
+    <div style="position:relative;display:inline-block;max-width:100%">
+      <button id="lb-prev"
+        style="position:absolute;left:-2.5rem;top:50%;transform:translateY(-50%);
+               background:rgba(255,255,255,.15);border:none;color:#fff;font-size:1.5rem;
+               padding:0.3rem 0.6rem;cursor:pointer;border-radius:4px"
+        onclick="lightboxNav(-1)">&#10094;</button>
+      <img id="lightbox-img" src="" alt=""
+           style="max-width:100%;max-height:80vh;object-fit:contain;display:block;border-radius:4px">
+      <button id="lb-next"
+        style="position:absolute;right:-2.5rem;top:50%;transform:translateY(-50%);
+               background:rgba(255,255,255,.15);border:none;color:#fff;font-size:1.5rem;
+               padding:0.3rem 0.6rem;cursor:pointer;border-radius:4px"
+        onclick="lightboxNav(1)">&#10095;</button>
+    </div>
+    <p id="lightbox-info" style="color:#999;margin:0.45rem 0 0;font-size:0.8rem"></p>
+  </div>
+</div>
+
 <script>
 (function () {
   /* ── Helpers ── */
@@ -314,23 +417,29 @@
     return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  /* ── Group flat API results by video ── */
-  function groupByVideo(items, isPhoto) {
+  /* ── State ── */
+  let _videoGroups = [];   // kept so playVideo can find all timestamps for a video
+  let _photoItems  = [];   // flat photo list for lightbox navigation
+  let _searchData  = { videos: [], photos: [] };
+  let _activeTab   = 'videos';
+
+  /* ── Group flat video list by video_id ── */
+  function groupByVideo(items, isPhotoSearch) {
     const map = new Map();
     for (const item of items) {
       if (!map.has(item.video_id)) {
         map.set(item.video_id, {
-          video_id:    item.video_id,
-          filename:    item.filename,
+          video_id:     item.video_id,
+          filename:     item.filename,
           duration_sec: item.duration_sec || null,
-          person_name: item.person_name,
-          hits:        [],
+          person_name:  item.person_name,
+          hits:         [],
         });
       }
       map.get(item.video_id).hits.push(item);
     }
     const groups = [...map.values()];
-    if (isPhoto) {
+    if (isPhotoSearch) {
       groups.sort((a, b) => {
         const bestA = Math.min(...a.hits.map(h => h.distance ?? 1));
         const bestB = Math.min(...b.hits.map(h => h.distance ?? 1));
@@ -342,14 +451,12 @@
     return groups;
   }
 
-  /* Pick up to n evenly-spaced hits for the frame strip */
   function sampleHits(hits, n) {
     if (hits.length <= n) return hits;
     const step = (hits.length - 1) / (n - 1);
     return Array.from({length: n}, (_, i) => hits[Math.round(i * step)]);
   }
 
-  /* Merge consecutive hits (sorted by time) into scenes separated by gapSec */
   function mergeHitsToSegments(hits, gapSec) {
     if (gapSec == null) gapSec = 90;
     const sorted = [...hits].sort((a, b) => (a.timestamp_sec || 0) - (b.timestamp_sec || 0));
@@ -366,69 +473,121 @@
     return segs;
   }
 
-  /* ── Render ── */
-  let _groups = [];   // kept so playVideo can find all timestamps for a video
+  /* ── Tabs ── */
+  window.switchTab = function (tab) {
+    _activeTab = tab;
+    document.getElementById('tab-videos').classList.toggle('active', tab === 'videos');
+    document.getElementById('tab-photos').classList.toggle('active', tab === 'photos');
+    if (tab === 'videos') {
+      _renderVideoContent(_searchData.videos, _lastIsPhotoSearch);
+    } else {
+      _renderPhotoContent(_searchData.photos);
+    }
+  };
 
+  /* ── Loading / empty state ── */
   function showLoading(msg) {
     document.getElementById('results-section').classList.remove('hidden');
     document.getElementById('results-header').textContent = msg;
     document.getElementById('results-list').innerHTML = '<p class="muted">Loading…</p>';
+    document.getElementById('results-tabs').classList.add('hidden');
+    document.getElementById('compile-section').classList.add('hidden');
+    document.getElementById('collage-section').classList.add('hidden');
   }
 
-  function renderResults(items, label, isPhoto) {
-    document.getElementById('results-section').classList.remove('hidden');
+  /* ── Top-level render — handles tabs and panels ── */
+  let _lastIsPhotoSearch = false;
 
-    if (!items.length) {
-      document.getElementById('results-header').textContent = label;
+  function renderResults(data, label, isPhotoSearch) {
+    _searchData = data;
+    _lastIsPhotoSearch = isPhotoSearch;
+
+    const hasVideos = data.videos && data.videos.length > 0;
+    const hasPhotos = data.photos && data.photos.length > 0;
+
+    document.getElementById('results-section').classList.remove('hidden');
+    document.getElementById('results-header').textContent = label;
+
+    if (!hasVideos && !hasPhotos) {
+      document.getElementById('results-tabs').classList.add('hidden');
       document.getElementById('results-list').innerHTML = '<p class="muted">No results found.</p>';
+      document.getElementById('compile-section').classList.add('hidden');
+      document.getElementById('collage-section').classList.add('hidden');
       return;
     }
 
-    _groups = groupByVideo(items, isPhoto);
+    // Show tabs only when both have results
+    const tabsEl = document.getElementById('results-tabs');
+    if (hasVideos && hasPhotos) {
+      tabsEl.classList.remove('hidden');
+      const uniqueVideoCount = new Set(data.videos.map(h => h.video_id)).size;
+      document.getElementById('tab-videos').textContent = 'Videos (' + uniqueVideoCount + ')';
+      document.getElementById('tab-photos').textContent = 'Photos (' + data.photos.length + ')';
+      // Default to whichever tab has more
+      _activeTab = data.photos.length > data.videos.length ? 'photos' : 'videos';
+      document.getElementById('tab-videos').classList.toggle('active', _activeTab === 'videos');
+      document.getElementById('tab-photos').classList.toggle('active', _activeTab === 'photos');
+    } else {
+      tabsEl.classList.add('hidden');
+      _activeTab = hasVideos ? 'videos' : 'photos';
+    }
 
-    // Count total scenes across all videos for the header
+    if (_activeTab === 'videos') {
+      _renderVideoContent(data.videos, isPhotoSearch);
+    } else {
+      _renderPhotoContent(data.photos);
+    }
+
+    // Hide the inactive panel
+    if (_activeTab === 'videos') {
+      document.getElementById('collage-section').classList.add('hidden');
+    } else {
+      document.getElementById('compile-section').classList.add('hidden');
+    }
+  }
+
+  /* ── Video tab rendering ── */
+  function _renderVideoContent(videos, isPhotoSearch) {
+    document.getElementById('compile-section').classList.add('hidden');
+    document.getElementById('collage-section').classList.add('hidden');
+
+    if (!videos || !videos.length) {
+      document.getElementById('results-list').innerHTML = '<p class="muted">No video results.</p>';
+      return;
+    }
+
+    _videoGroups = groupByVideo(videos, isPhotoSearch);
+
     let totalScenes = 0;
-    _groups.forEach(g => { totalScenes += mergeHitsToSegments(g.hits).length; });
+    _videoGroups.forEach(g => { totalScenes += mergeHitsToSegments(g.hits).length; });
 
-    document.getElementById('results-header').textContent =
-      label + ' — ' + _groups.length + ' video' + (_groups.length !== 1 ? 's' : '') +
-      ', ' + totalScenes + ' scene' + (totalScenes !== 1 ? 's' : '');
-
-    const html = _groups.map(function (g) {
-      const segs = mergeHitsToSegments(g.hits);
-
-      // 3 evenly-spaced video frames (sampled across all raw hits)
+    const html = _videoGroups.map(function (g) {
+      const segs   = mergeHitsToSegments(g.hits);
       const sample = sampleHits(g.hits, 3);
       const frames = sample.map(h =>
         '<img src="/api/frame/' + g.video_id + '?t=' + Math.floor(h.timestamp_sec || 0) + '"' +
         ' alt="" onerror="this.style.display=\'none\'">'
       ).join('');
 
-      // Meta line — show scene count rather than raw detection count
       let meta = segs.length + ' scene' + (segs.length !== 1 ? 's' : '');
       if (g.person_name) {
         meta += ' · ' + esc(g.person_name);
-      } else if (isPhoto) {
+      } else if (isPhotoSearch) {
         const best = Math.min(...g.hits.map(h => h.distance ?? 1));
         meta += ' · best match ' + Math.round((1 - best) * 100) + '%';
       }
 
-      // One chip per scene; shows a range like "0:00–9:12" for long scenes
       const chips = segs.map(seg => {
-        // Extend displayed end to video duration when detection ends near the real end
-        // (server dedup means last timestamp is ~1 min before actual video end)
         let displayEnd = seg.end;
-        if (g.duration_sec && g.duration_sec - seg.end < 90) {
-          displayEnd = g.duration_sec;
-        }
-        const label = displayEnd > seg.start
+        if (g.duration_sec && g.duration_sec - seg.end < 90) displayEnd = g.duration_sec;
+        const lbl = displayEnd > seg.start
           ? fmtTime(seg.start) + '–' + fmtTime(displayEnd)
           : fmtTime(seg.start);
         return '<button class="chip"' +
           ' data-vid="' + g.video_id + '"' +
           ' data-ts="'  + seg.start + '"' +
           ' data-fn="'  + esc(g.filename) + '"' +
-          ' onclick="playChip(this)">' + label + '</button>';
+          ' onclick="playChip(this)">' + lbl + '</button>';
       }).join('');
 
       return '<div class="result-row card">' +
@@ -441,12 +600,49 @@
 
     document.getElementById('results-list').innerHTML = '<div class="result-list">' + html + '</div>';
 
-    // Populate the compile panel with unique named persons from this result set
-    const persons = new Map(); // person_id → person_name
-    for (const item of items) {
+    const persons = new Map();
+    for (const item of videos) {
       if (item.person_id && item.person_name) persons.set(item.person_id, item.person_name);
     }
     _updateCompileSection(persons);
+  }
+
+  /* ── Photo tab rendering ── */
+  function _renderPhotoContent(photos) {
+    document.getElementById('compile-section').classList.add('hidden');
+    document.getElementById('collage-section').classList.add('hidden');
+
+    if (!photos || !photos.length) {
+      document.getElementById('results-list').innerHTML = '<p class="muted">No photo results.</p>';
+      return;
+    }
+
+    _photoItems = photos;
+
+    const cards = photos.map(function (p, idx) {
+      const src  = p.photo_id != null ? '/api/photo/' + p.photo_id + '/preview' : '/static/' + p.thumbnail_path;
+      const date = (p.taken_at || '').slice(0, 10);
+      const meta = p.person_name
+        ? esc(p.person_name)
+        : (p.distance != null ? 'match ' + Math.round((1 - p.distance) * 100) + '%' : '');
+      return '<div class="photo-card card">' +
+        '<div class="photo-thumb-wrap">' +
+          '<img src="' + esc(src) + '" alt="" loading="lazy">' +
+          '<button class="photo-view-btn" onclick="openLightbox(' + idx + ')">View</button>' +
+        '</div>' +
+        '<div class="photo-card-name" title="' + esc(p.filename) + '">' + esc(p.filename) + '</div>' +
+        (date ? '<div class="photo-card-meta">' + esc(date) + '</div>' : '') +
+        (meta ? '<div class="photo-card-meta">' + meta + '</div>' : '') +
+        '</div>';
+    }).join('');
+
+    document.getElementById('results-list').innerHTML = '<div class="photo-grid">' + cards + '</div>';
+
+    const persons = new Map();
+    for (const item of photos) {
+      if (item.person_id && item.person_name) persons.set(item.person_id, item.person_name);
+    }
+    _updateCollageSection(persons);
   }
 
   /* ── Highlight reel ── */
@@ -454,14 +650,8 @@
     const section  = document.getElementById('compile-section');
     const btnsDiv  = document.getElementById('compile-btns');
     const progress = document.getElementById('compile-progress');
-
-    progress.innerHTML = '';  // reset any previous job UI
-
-    if (persons.size === 0) {
-      section.classList.add('hidden');
-      return;
-    }
-
+    progress.innerHTML = '';
+    if (persons.size === 0) { section.classList.add('hidden'); return; }
     section.classList.remove('hidden');
     const single = persons.size === 1;
     btnsDiv.innerHTML = [...persons.entries()].map(([pid, pname]) =>
@@ -475,69 +665,98 @@
 
   window.startCompile = async function (personId, personName) {
     if (_compileTimer) clearInterval(_compileTimer);
-
     const clip  = parseInt(document.getElementById('c-clip').value)  || 30;
     const gap   = parseFloat(document.getElementById('c-gap').value) || 30;
     const max   = parseInt(document.getElementById('c-max').value)   || 5;
     const order = document.getElementById('c-order').value;
-    const prog = document.getElementById('compile-progress');
-
+    const prog  = document.getElementById('compile-progress');
     prog.innerHTML =
-      '<div class="progress-wrap" style="margin-top:0.5rem">' +
-        '<div class="progress-bar" id="c-bar" style="width:0%"></div>' +
-      '</div>' +
+      '<div class="progress-wrap" style="margin-top:0.5rem"><div class="progress-bar" id="c-bar" style="width:0%"></div></div>' +
       '<p class="muted" id="c-msg" style="margin:0.3rem 0 0">Starting…</p>';
-
     let resp;
     try {
       resp = await fetch('/api/compile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          person_id: personId,
-          clip_duration_sec: clip,
-          merge_gap_sec: gap,
-          max_clips_per_video: max,
-          order: order,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ person_id: personId, clip_duration_sec: clip,
+                               merge_gap_sec: gap, max_clips_per_video: max, order }),
       });
-    } catch {
-      document.getElementById('c-msg').textContent = 'Request failed.';
-      return;
-    }
-
-    if (!resp.ok) {
-      document.getElementById('c-msg').textContent = 'Server error starting compilation.';
-      return;
-    }
-
+    } catch { document.getElementById('c-msg').textContent = 'Request failed.'; return; }
+    if (!resp.ok) { document.getElementById('c-msg').textContent = 'Server error.'; return; }
     const { job_id } = await resp.json();
-
     _compileTimer = setInterval(async function () {
       let job;
       try { job = await (await fetch('/api/compile/' + job_id)).json(); } catch { return; }
-
       const bar = document.getElementById('c-bar');
       const msg = document.getElementById('c-msg');
       if (!bar || !msg) { clearInterval(_compileTimer); return; }
-
       bar.style.width = Math.round((job.progress || 0) * 100) + '%';
-
       if (job.status === 'done') {
         clearInterval(_compileTimer);
         bar.style.width = '100%';
-        msg.innerHTML =
-          '<a href="/api/compile/' + job_id + '/download" download="' + esc(personName) + '_reel.mp4">' +
-          '&#11015; Download ' + esc(personName) + ' reel</a>';
+        msg.innerHTML = '<a href="/api/compile/' + job_id + '/download" download="' + esc(personName) + '_reel.mp4">&#11015; Download ' + esc(personName) + ' reel</a>';
       } else if (job.status === 'error') {
         clearInterval(_compileTimer);
         msg.textContent = 'Error: ' + (job.error || 'unknown');
       } else {
-        const done  = job.segments_done  || 0;
-        const total = job.segments_total || 0;
-        msg.textContent = total > 0
-          ? 'Cutting clip ' + done + ' of ' + total + '…'
-          : 'Preparing…';
+        const done = job.segments_done || 0; const total = job.segments_total || 0;
+        msg.textContent = total > 0 ? 'Cutting clip ' + done + ' of ' + total + '…' : 'Preparing…';
+      }
+    }, 1000);
+  };
+
+  /* ── Photo collage ── */
+  function _updateCollageSection(persons) {
+    const section  = document.getElementById('collage-section');
+    const btnsDiv  = document.getElementById('collage-btns');
+    const progress = document.getElementById('collage-progress');
+    progress.innerHTML = '';
+    if (persons.size === 0) { section.classList.add('hidden'); return; }
+    section.classList.remove('hidden');
+    const single = persons.size === 1;
+    btnsDiv.innerHTML = [...persons.entries()].map(([pid, pname]) =>
+      '<button onclick="startCollage(\'' + pid + '\',\'' + esc(pname) + '\')">' +
+      (single ? '&#9654; Create Collage' : '&#9654; ' + esc(pname) + '\'s Collage') +
+      '</button>'
+    ).join(' ');
+  }
+
+  let _collageTimer = null;
+
+  window.startCollage = async function (personId, personName) {
+    if (_collageTimer) clearInterval(_collageTimer);
+    const cols     = parseInt(document.getElementById('co-cols').value) || 3;
+    const sort     = document.getElementById('co-sort').value;
+    const captions = document.getElementById('co-captions').checked;
+    const prog     = document.getElementById('collage-progress');
+    prog.innerHTML =
+      '<div class="progress-wrap" style="margin-top:0.5rem"><div class="progress-bar" id="co-bar" style="width:0%"></div></div>' +
+      '<p class="muted" id="co-msg" style="margin:0.3rem 0 0">Starting…</p>';
+    let resp;
+    try {
+      resp = await fetch('/api/collage', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ person_id: personId, columns: cols, sort, captions }),
+      });
+    } catch { document.getElementById('co-msg').textContent = 'Request failed.'; return; }
+    if (!resp.ok) { document.getElementById('co-msg').textContent = 'Server error.'; return; }
+    const { job_id } = await resp.json();
+    _collageTimer = setInterval(async function () {
+      let job;
+      try { job = await (await fetch('/api/collage/' + job_id)).json(); } catch { return; }
+      const bar = document.getElementById('co-bar');
+      const msg = document.getElementById('co-msg');
+      if (!bar || !msg) { clearInterval(_collageTimer); return; }
+      bar.style.width = Math.round((job.progress || 0) * 100) + '%';
+      if (job.status === 'done') {
+        clearInterval(_collageTimer);
+        bar.style.width = '100%';
+        msg.innerHTML = '<a href="/api/collage/' + job_id + '/download" download="' + esc(personName) + '_collage.png">&#11015; Download ' + esc(personName) + ' collage</a>';
+      } else if (job.status === 'error') {
+        clearInterval(_collageTimer);
+        msg.textContent = 'Error: ' + (job.error || 'unknown');
+      } else {
+        const done = job.photos_done || 0; const total = job.photos_total || 0;
+        msg.textContent = total > 0 ? 'Processing photo ' + done + ' of ' + total + '…' : 'Preparing…';
       }
     }, 1000);
   };
@@ -550,7 +769,7 @@
     showLoading('Searching…');
     try {
       const resp = await fetch('/api/search?name=' + encodeURIComponent(name));
-      renderResults(await resp.json(), 'Results for "' + name + '"', false);
+      renderResults(await resp.json(), 'Results for "' + esc(name) + '"', false);
     } catch { document.getElementById('results-list').innerHTML = '<p class="muted">Request failed.</p>'; }
   });
 
@@ -566,12 +785,48 @@
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         document.getElementById('results-header').textContent = 'Error';
-        document.getElementById('results-list').innerHTML =
-          '<p class="muted">' + esc(err.detail || 'Search failed.') + '</p>';
+        document.getElementById('results-list').innerHTML = '<p class="muted">' + esc(err.detail || 'Search failed.') + '</p>';
         return;
       }
       renderResults(await resp.json(), 'Matches for uploaded photo', true);
     } catch { document.getElementById('results-list').innerHTML = '<p class="muted">Request failed.</p>'; }
+  });
+
+  /* ── Photo lightbox ── */
+  let _lbIdx = 0;
+
+  window.openLightbox = function (idx) {
+    _lbIdx = idx;
+    _showLightboxItem();
+    document.getElementById('photo-modal').classList.remove('hidden');
+  };
+
+  function _showLightboxItem() {
+    const p = _photoItems[_lbIdx];
+    if (!p) return;
+    document.getElementById('lightbox-img').src = '/api/photo/' + p.photo_id;
+    const date = (p.taken_at || '').slice(0, 10);
+    document.getElementById('lightbox-info').textContent =
+      p.filename + (date ? ' · ' + date : '') + ' (' + (_lbIdx + 1) + ' / ' + _photoItems.length + ')';
+    document.getElementById('lb-prev').style.visibility = _lbIdx > 0 ? 'visible' : 'hidden';
+    document.getElementById('lb-next').style.visibility = _lbIdx < _photoItems.length - 1 ? 'visible' : 'hidden';
+  }
+
+  window.lightboxNav = function (dir) {
+    const next = _lbIdx + dir;
+    if (next < 0 || next >= _photoItems.length) return;
+    _lbIdx = next;
+    document.getElementById('lightbox-img').src = '';
+    _showLightboxItem();
+  };
+
+  window.closeLightbox = function () {
+    document.getElementById('photo-modal').classList.add('hidden');
+    document.getElementById('lightbox-img').src = '';
+  };
+
+  document.getElementById('photo-modal').addEventListener('click', function (e) {
+    if (e.target === this) closeLightbox();
   });
 
   /* ── Custom video player ── */
@@ -587,7 +842,6 @@
   const pDur       = document.getElementById('p-dur');
   const modalInfo  = document.getElementById('modal-info');
 
-  // Sync scrubber + time display
   videoEl.addEventListener('timeupdate', function () {
     if (!videoEl.duration) return;
     const pct = (videoEl.currentTime / videoEl.duration) * 100;
@@ -608,28 +862,21 @@
     videoEl.paused ? videoEl.play().catch(() => {}) : videoEl.pause();
   });
 
-  // Scrubber click + drag
   let _dragging = false;
   function _seekFromEvent(e) {
     const rect = scrubTrack.getBoundingClientRect();
     const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     if (videoEl.duration) videoEl.currentTime = pct * videoEl.duration;
   }
-  scrubWrap.addEventListener('mousedown', function (e) {
-    _dragging = true;
-    _seekFromEvent(e);
-    e.preventDefault();
-  });
+  scrubWrap.addEventListener('mousedown', function (e) { _dragging = true; _seekFromEvent(e); e.preventDefault(); });
   document.addEventListener('mousemove', function (e) { if (_dragging) _seekFromEvent(e); });
   document.addEventListener('mouseup',   function ()  { _dragging = false; });
 
-  // Fullscreen
   document.getElementById('btn-fs').addEventListener('click', function () {
     const wrap = document.getElementById('player-wrap');
     document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen().catch(() => {});
   });
 
-  // Place yellow marker lines at each detected timestamp
   function _placeMarkers() {
     markersDiv.innerHTML = '';
     const dur = videoEl.duration;
@@ -637,8 +884,8 @@
     _activeTimestamps.forEach(function (ts) {
       const pct = (ts / dur) * 100;
       const m   = document.createElement('div');
-      m.className   = 'ts-marker';
-      m.style.left  = pct + '%';
+      m.className    = 'ts-marker';
+      m.style.left   = pct + '%';
       m.dataset.time = fmtTime(ts);
       m.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -654,24 +901,18 @@
   function _openVideo(videoId, ts, filename) {
     modal.classList.remove('hidden');
     modalInfo.textContent = filename + ' · ' + fmtTime(ts);
-
-    // Gather all timestamps for this video from the stored groups
-    const group = _groups.find(g => String(g.video_id) === String(videoId));
+    const group = _videoGroups.find(g => String(g.video_id) === String(videoId));
     _activeTimestamps = group ? group.hits.map(h => h.timestamp_sec || 0) : [ts];
-
     const isSameVideo = videoEl.dataset.videoId === String(videoId);
     if (!isSameVideo) {
       videoEl.dataset.videoId = String(videoId);
       videoEl.src = '/api/video/' + videoId;
     }
-
     function seekAndPlay() {
       videoEl.currentTime = ts;
       videoEl.play().catch(() => {});
     }
-
     if (videoEl.readyState >= 1) {
-      // Metadata already available — place markers now
       if (!isSameVideo) _placeMarkers();
       seekAndPlay();
     } else {
@@ -682,13 +923,10 @@
     }
   }
 
-  // Called by chip buttons in the result list
   window.playChip = function (btn) {
     _openVideo(btn.dataset.vid, parseFloat(btn.dataset.ts) || 0, btn.dataset.fn);
   };
 
-  // Modal close
-  // Log video errors to console to aid debugging
   videoEl.addEventListener('error', function () {
     if (videoEl.error) console.error('Video error code', videoEl.error.code, videoEl.error.message);
   });
@@ -697,7 +935,7 @@
     modal.classList.add('hidden');
     videoEl.pause();
     videoEl.removeAttribute('src');
-    videoEl.load();                  // fully resets the element
+    videoEl.load();
     videoEl.dataset.videoId = '';
     _activeTimestamps = [];
     markersDiv.innerHTML = '';
@@ -709,13 +947,22 @@
 
   modal.addEventListener('click', function (e) { if (e.target === modal) closeModal(); });
 
-  // Keyboard shortcuts (only when modal is open)
+  /* ── Keyboard shortcuts ── */
   document.addEventListener('keydown', function (e) {
-    if (modal.classList.contains('hidden')) return;
-    if (e.key === 'Escape')      { closeModal(); return; }
-    if (e.key === ' ')           { e.preventDefault(); videoEl.paused ? videoEl.play().catch(()=>{}) : videoEl.pause(); }
-    if (e.key === 'ArrowRight')  { e.preventDefault(); videoEl.currentTime = Math.min(videoEl.duration || 0, videoEl.currentTime + 5); }
-    if (e.key === 'ArrowLeft')   { e.preventDefault(); videoEl.currentTime = Math.max(0, videoEl.currentTime - 5); }
+    // Video modal
+    if (!modal.classList.contains('hidden')) {
+      if (e.key === 'Escape')     { closeModal(); return; }
+      if (e.key === ' ')          { e.preventDefault(); videoEl.paused ? videoEl.play().catch(()=>{}) : videoEl.pause(); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); videoEl.currentTime = Math.min(videoEl.duration || 0, videoEl.currentTime + 5); }
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); videoEl.currentTime = Math.max(0, videoEl.currentTime - 5); }
+      return;
+    }
+    // Photo lightbox
+    if (!document.getElementById('photo-modal').classList.contains('hidden')) {
+      if (e.key === 'Escape')     { closeLightbox(); return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); lightboxNav(1); }
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); lightboxNav(-1); }
+    }
   });
 }());
 </script>
