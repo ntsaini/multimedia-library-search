@@ -121,3 +121,30 @@ def serve_video(video_id: int, request: Request):
             "Accept-Ranges": "bytes",
         },
     )
+
+
+@router.get("/api/video/{video_id}/info")
+def video_info(video_id: int):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT id, path, filename, duration_sec, recorded_at, indexed_at FROM videos WHERE id = ?",
+        (video_id,),
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(404, "Video not found")
+
+    path = row["path"]
+    return {
+        "id": row["id"],
+        "media_type": "video",
+        "filename": row["filename"],
+        "path": path,
+        "duration_sec": row["duration_sec"],
+        "recorded_at": row["recorded_at"],
+        "indexed_at": row["indexed_at"],
+        "exists": os.path.isfile(path),
+        "api_path": f"/api/video/{video_id}",
+        "frame_api_path": f"/api/frame/{video_id}",
+    }

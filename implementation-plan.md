@@ -826,8 +826,8 @@ Log structured events to stderr. MCP stdio stdout must carry only protocol frame
 | `get_library_stats()` | Return indexed video/photo/face/person counts |
 | `list_people(include_unnamed, limit, name_query)` | List person clusters; `include_unnamed` controls `name IS NULL` rows |
 | `get_person(person_id)` | Fetch person record with thumbnail and sample paths |
-| `search_by_name(name, limit)` | Name search; returns `{videos, photos}` |
-| `search_by_photo(image_path, limit, distance_threshold)` | Read file from disk, POST to `/api/search/photo`, then apply tool-side limit and distance filtering unless the API is extended to accept those parameters |
+| `search_by_name(name, limit)` | Name search; returns `{videos, photos}`; `limit` applies per media type |
+| `search_by_photo(image_path, limit, distance_threshold)` | Read file from disk, POST to `/api/search/photo`, then apply tool-side per-media-type limit and distance filtering unless the API is extended to accept those parameters |
 | `get_media_info(video_id, photo_id)` | Metadata + API access paths for exactly one video or photo; reject calls that pass neither or both IDs |
 | `compile_highlight_reel(person_id, clip_duration_sec, merge_gap_sec, max_clips_per_video, order)` | Start compile job; return job_id |
 | `check_compile_status(job_id)` | Poll job; include absolute `download_url` when done |
@@ -846,7 +846,7 @@ Environment variables via `pydantic-settings`:
 |---|---|---|
 | `MULTIMEDIA_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI base URL |
 | `MULTIMEDIA_HTTP_TIMEOUT_SEC` | `30` | httpx request timeout |
-| `MULTIMEDIA_SEARCH_LIMIT_MAX` | `200` | Hard cap on tool result counts |
+| `MULTIMEDIA_SEARCH_LIMIT_MAX` | `200` | Hard cap on tool result counts per media type |
 | `MULTIMEDIA_LOG_LEVEL` | `INFO` | MCP server log verbosity |
 
 `MULTIMEDIA_API_KEY` may be reserved for future auth but is not implemented here.
@@ -865,7 +865,7 @@ pydantic-settings
 - `python cli.py mcp` — runs MCP server over stdio (primary entry point)
 - `python -m mcp_server.server` — direct alternative
 - Update `README.md`: setup steps, FastAPI startup requirement, Claude Desktop JSON config, tool usage examples, privacy/offline notes
-- Add `examples/tool_calls.py` with runnable calls against a live FastAPI instance
+- Add `examples/api_calls.py` with runnable HTTP API calls against a live FastAPI instance. This is an API smoke example, not a replacement for MCP Inspector/client verification.
 
 ### Project structure additions
 
@@ -881,7 +881,7 @@ app/services/
 ├── search_service.py
 └── person_service.py
 examples/
-└── tool_calls.py
+└── api_calls.py
 ```
 
 ### Test plan
@@ -889,7 +889,7 @@ examples/
 - **Service tests:** extracted services preserve existing route response shapes; test empty name, no matches, empty Chroma collection, invalid image, no-face image
 - **API regression tests:** existing routes (`GET /api/search`, `POST /api/search/photo`, `GET /api/persons`) still pass; new endpoints return typed JSON and correct status codes
 - **MCP/tool tests:** validate input bounds; mock HTTP responses for success, 404, 422, 500, and connection failure; verify all tool outputs are Pydantic-validated; verify tool names/descriptions are discoverable; verify logs go to stderr
-- **Manual smoke tests:** `python cli.py serve` + `python -m mcp_server.server`; call `health_check`, `list_people`, `search_by_name`, and job status tools through MCP Inspector or `examples/tool_calls.py`; `python -m compileall app mcp_server cli.py`
+- **Manual smoke tests:** `python cli.py serve` + `python -m mcp_server.server`; call `health_check`, `list_people`, `search_by_name`, and job status tools through MCP Inspector or another MCP-compatible client; use `examples/api_calls.py` only for HTTP API smoke checks; `python -m compileall app mcp_server cli.py`
 
 ### Known constraints
 

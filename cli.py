@@ -232,6 +232,11 @@ def cmd_serve(args) -> None:
     uvicorn.run("app.main:app", host=args.host, port=args.port, reload=False)
 
 
+def cmd_mcp(args) -> None:
+    from mcp_server.server import main as mcp_main
+    mcp_main()
+
+
 def main() -> None:
     check_dependencies()
 
@@ -319,6 +324,9 @@ def main() -> None:
     p_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     p_serve.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     p_serve.set_defaults(func=cmd_serve)
+
+    p_mcp = subs.add_parser("mcp", help="Start the MCP server over stdio")
+    p_mcp.set_defaults(func=cmd_mcp)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

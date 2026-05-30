@@ -196,7 +196,7 @@ A local, private video library search engine that indexes a directory of videos,
 | F-57 | Log structured events to stderr only; MCP stdio stdout must remain protocol-only |
 | F-58 | Job status tools (`check_compile_status`, `check_collage_status`) return an absolute `download_url` when status is `"done"` |
 | F-59 | Update README with MCP setup instructions, required FastAPI startup step, Claude Desktop config snippet, tool examples, and privacy/offline notes |
-| F-60 | Add `examples/tool_calls.py` with runnable examples against a live FastAPI instance |
+| F-60 | Add `examples/api_calls.py` with runnable HTTP API smoke examples against a live FastAPI instance; MCP transport examples should use MCP Inspector or another MCP-compatible client |
 | F-61 | Keep MCP localhost/offline by default; any network-accessible MCP or FastAPI deployment requires a separate auth layer before exposure |
 
 ### Phase 7 — Full Body Re-ID (Future)
@@ -262,7 +262,7 @@ The system uses keyframe sampling (default: 1 frame/sec) rather than processing 
 - `GET /api/health`, `GET /api/stats`, `GET /api/persons/{id}`, `GET /api/video/{id}/info`, and `GET /api/photo/{id}/info` all return typed JSON with correct status codes
 - `python cli.py mcp` starts the MCP server over stdio without error
 - An MCP client (e.g. Claude Desktop or MCP Inspector) can discover and call all tools
-- `health_check`, `list_people`, `search_by_name`, `search_by_photo`, `compile_highlight_reel`, and `check_compile_status` return structured, Pydantic-validated JSON
+- `health_check`, `list_people`, `search_by_name`, `search_by_photo`, `compile_highlight_reel`, and `check_compile_status` return structured, Pydantic-validated JSON; search tool `limit` behavior is documented as per media type
 - Job status tools return an absolute `download_url` when the job is done
 - MCP logs go to stderr; stdout carries only MCP protocol frames
 - README documents setup, FastAPI startup dependency, Claude Desktop config, and tool usage examples

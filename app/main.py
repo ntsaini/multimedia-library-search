@@ -15,6 +15,7 @@ from app.api import video as video_api
 from app.api import compile as compile_api
 from app.api import photo as photo_api
 from app.api import collage as collage_api
+from app.api import system as system_api
 
 
 @asynccontextmanager
@@ -39,6 +40,7 @@ app.include_router(video_api.router)
 app.include_router(compile_api.router)
 app.include_router(photo_api.router)
 app.include_router(collage_api.router)
+app.include_router(system_api.router)
 
 
 @app.get("/")
