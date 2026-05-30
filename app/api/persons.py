@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.chroma import get_collection
 from app.database import get_connection
+from app.services.person_service import get_person, list_people
 
 router = APIRouter()
 
@@ -19,12 +20,15 @@ class MergeRequest(BaseModel):
 
 @router.get("/api/persons")
 def list_persons():
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, name, thumbnail_path, face_count FROM persons ORDER BY face_count DESC"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    return list_people(include_unnamed=True)
+
+
+@router.get("/api/persons/{person_id}")
+def get_person_by_id(person_id: str):
+    person = get_person(person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return person
 
 
 @router.post("/api/persons/merge")

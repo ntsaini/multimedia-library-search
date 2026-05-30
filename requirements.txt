@@ -10,3 +10,6 @@ numpy
 scikit-learn
 tqdm
 Pillow                   # EXIF date extraction + photo collage composition
+mcp[cli]
+httpx
+pydantic-settings

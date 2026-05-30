@@ -132,6 +132,61 @@ python cli.py serve
 
 Opens at `http://127.0.0.1:8000`. Options: `--host 0.0.0.0 --port 8000`.
 
+### Start the MCP server
+
+The MCP server lets local AI agents call the library through a small tool surface. Start the FastAPI app first, then start MCP in the agent client config.
+
+```bash
+python cli.py serve
+python cli.py mcp
+```
+
+Direct execution is also available:
+
+```bash
+python -m mcp_server.server
+```
+
+Configuration uses environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `MULTIMEDIA_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI base URL MCP should call |
+| `MULTIMEDIA_HTTP_TIMEOUT_SEC` | `30` | HTTP timeout in seconds |
+| `MULTIMEDIA_SEARCH_LIMIT_MAX` | `200` | Max results returned by MCP search tools per media type |
+| `MULTIMEDIA_LOG_LEVEL` | `INFO` | MCP server log level |
+
+Claude Desktop config example:
+
+```json
+{
+  "mcpServers": {
+    "multimedia-library-search": {
+      "command": "python",
+      "args": [
+        "/absolute/path/to/multimedia-library-search/cli.py",
+        "mcp"
+      ],
+      "env": {
+        "MULTIMEDIA_API_BASE_URL": "http://127.0.0.1:8000"
+      }
+    }
+  }
+}
+```
+
+Available tools: `health_check`, `get_library_stats`, `list_people`, `get_person`, `search_by_name`, `search_by_photo`, `get_media_info`, `compile_highlight_reel`, `check_compile_status`, `create_photo_collage`, and `check_collage_status`. For search tools, `limit` caps each media list separately, so a request with `limit=5` may return up to 5 videos and 5 photos.
+
+For a simple HTTP API smoke test against a running FastAPI instance:
+
+```bash
+python examples/api_calls.py Alice
+```
+
+This example calls the FastAPI HTTP API directly. Full MCP transport verification should be done through MCP Inspector or an MCP-compatible client by confirming tool discovery and calling `health_check`, `list_people`, and one search tool.
+
+MCP is intended for localhost/offline use. Do not expose the FastAPI or MCP process on a network without adding an authentication layer first.
+
 ---
 
 ## Web UI
@@ -202,16 +257,21 @@ Capture date is read from EXIF `DateTimeOriginal`, falling back to file mtime.
 |---|---|---|
 | `POST` | `/api/index` | Start indexing a directory (`directory_path`, `interval_sec`) |
 | `GET` | `/api/index/status` | Indexing progress (videos + photos) |
+| `GET` | `/api/health` | App, SQLite, and ChromaDB readiness |
+| `GET` | `/api/stats` | Video/photo/face/person counts |
 | `POST` | `/api/cluster` | Start a cluster job (`incremental`, `eps`, `min_samples`) |
 | `GET` | `/api/cluster/status` | Cluster job progress |
 | `GET` | `/api/persons` | List all person clusters (id, name, thumbnail, face_count) |
+| `GET` | `/api/persons/{id}` | Get one person cluster, including sample thumbnails |
 | `POST` | `/api/persons/{id}/label` | Save a name for a person |
 | `POST` | `/api/persons/merge` | Merge two clusters (`source_id`, `target_id`) |
 | `GET` | `/api/search?name=Alice` | Find all appearances of a named person (videos + photos) |
 | `POST` | `/api/search/photo` | Upload a face photo; returns ranked matches across videos and photos |
 | `GET` | `/api/video/{id}` | Stream a video file with HTTP range request support |
+| `GET` | `/api/video/{id}/info` | JSON video metadata and local API paths |
 | `GET` | `/api/frame/{id}?t=47` | Extract a single JPEG frame at the given timestamp (cached) |
 | `GET` | `/api/photo/{id}` | Serve the original photo file |
+| `GET` | `/api/photo/{id}/info` | JSON photo metadata and local API paths |
 | `GET` | `/api/photo/{id}/preview?size=600` | Serve a downscaled JPEG preview (max 1200px) |
 | `POST` | `/api/compile` | Start a highlight reel job (`person_id`, `clip_duration_sec`, `merge_gap_sec`, `max_clips_per_video`, `order`) |
 | `GET` | `/api/compile/{job_id}` | Poll reel job status and progress |
@@ -273,3 +333,4 @@ All indexed data lives in `data/` and `static/thumbnails/`. Delete those directo
 - [x] Phase 3 — Search by name or reference photo + in-browser playback
 - [x] Phase 4 — Highlight reel compilation (FFmpeg clip extraction + concat)
 - [x] Phase 5 — Photo library support (indexing, search, collage)
+- [x] Phase 6 — LLM tool layer: MCP server + stable read-oriented API endpoints
