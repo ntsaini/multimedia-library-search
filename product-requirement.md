@@ -37,6 +37,8 @@ A local, private video library search engine that indexes a directory of videos,
 | Video processing | FFmpeg |
 | Face clustering | DBSCAN (scikit-learn) |
 | EXIF + image composition | Pillow |
+| Agent tool interface | MCP (Model Context Protocol) via FastMCP |
+| MCP HTTP client | httpx (async) |
 
 ---
 
@@ -88,7 +90,25 @@ A local, private video library search engine that indexes a directory of videos,
 
 **US-19** As a user, I want to download the finished collage as a PNG file.
 
-### Phase 6 — Full Body Search (Future)
+### Phase 6 — LLM Tool Layer & MCP Server
+
+**US-20** As an AI agent or LLM client, I want to verify the multimedia library service is healthy and storage is initialized before issuing queries.
+
+**US-21** As an AI agent, I want to retrieve library statistics (video, photo, face, and person counts) so I can orient myself before answering questions.
+
+**US-22** As an AI agent, I want to list and look up labeled people in the library so I can answer questions about who is present.
+
+**US-23** As an AI agent, I want to search the library by person name and receive structured results I can reason over.
+
+**US-24** As an AI agent, I want to search by a reference image file path and receive ranked results with distance scores.
+
+**US-25** As an AI agent, I want to retrieve full metadata for a specific video or photo from a prior search result.
+
+**US-26** As an AI agent, I want to kick off a highlight reel or photo collage compilation job and poll its status, then return a download URL to the user.
+
+**US-27** As a developer, I want to connect Claude Desktop (or any MCP-compatible client) to the local multimedia library by adding a single JSON config block.
+
+### Phase 7 — Full Body Search (Future)
 
 **US-13** As a user, I want the search to find a person even when their face is partially obscured (cap, glasses, turned away), using their overall body appearance.
 
@@ -160,7 +180,26 @@ A local, private video library search engine that indexes a directory of videos,
 | F-42 | Run collage generation as a background job; show progress in the UI |
 | F-43 | Provide a download link for the completed collage PNG |
 
-### Phase 6 — Full Body Re-ID (Future)
+### Phase 6 — LLM Tool Layer & MCP Server
+
+| ID | Requirement |
+|---|---|
+| F-48 | Add `GET /api/health` endpoint returning readiness of the app, SQLite, and ChromaDB |
+| F-49 | Add `GET /api/stats` endpoint returning counts of indexed videos, photos, faces, persons, and labeled persons |
+| F-50 | Add `GET /api/persons/{person_id}` endpoint for clean person lookup by ID; 404 when not found; `name: null` for unnamed clusters |
+| F-51 | Add `GET /api/video/{video_id}/info` and `GET /api/photo/{photo_id}/info` endpoints returning JSON metadata and local API access paths |
+| F-52 | Extract search logic from route functions into `app/services/search_service.py` and person helpers into `app/services/person_service.py`; existing routes remain unchanged |
+| F-53 | Create `mcp_server/` package using `mcp.server.fastmcp.FastMCP`; default transport is stdio; support optional Streamable HTTP transport |
+| F-54 | Implement MCP tools: `health_check`, `get_library_stats`, `list_people`, `get_person`, `search_by_name`, `search_by_photo`, `get_media_info`, `compile_highlight_reel`, `check_compile_status`, `create_photo_collage`, `check_collage_status`; `get_media_info` must accept exactly one media ID |
+| F-55 | Configure MCP server via environment variables: `MULTIMEDIA_API_BASE_URL` (default `http://127.0.0.1:8000`), `MULTIMEDIA_HTTP_TIMEOUT_SEC`, `MULTIMEDIA_SEARCH_LIMIT_MAX`, `MULTIMEDIA_LOG_LEVEL` |
+| F-56 | Add `python cli.py mcp` command to run the MCP server over stdio; keep `python -m mcp_server.server` as a direct alternative |
+| F-57 | Log structured events to stderr only; MCP stdio stdout must remain protocol-only |
+| F-58 | Job status tools (`check_compile_status`, `check_collage_status`) return an absolute `download_url` when status is `"done"` |
+| F-59 | Update README with MCP setup instructions, required FastAPI startup step, Claude Desktop config snippet, tool examples, and privacy/offline notes |
+| F-60 | Add `examples/tool_calls.py` with runnable examples against a live FastAPI instance |
+| F-61 | Keep MCP localhost/offline by default; any network-accessible MCP or FastAPI deployment requires a separate auth layer before exposure |
+
+### Phase 7 — Full Body Re-ID (Future)
 
 | ID | Requirement |
 |---|---|
@@ -218,3 +257,13 @@ The system uses keyframe sampling (default: 1 frame/sec) rather than processing 
 - `/search?name=Alice` shows a Photos tab with correctly dated photo cards
 - Clicking a photo opens the lightbox; keyboard navigation cycles through results
 - "Create Collage" runs as a background job; the downloaded PNG shows a correctly laid-out grid
+
+### Phase 6 Done When:
+- `GET /api/health`, `GET /api/stats`, `GET /api/persons/{id}`, `GET /api/video/{id}/info`, and `GET /api/photo/{id}/info` all return typed JSON with correct status codes
+- `python cli.py mcp` starts the MCP server over stdio without error
+- An MCP client (e.g. Claude Desktop or MCP Inspector) can discover and call all tools
+- `health_check`, `list_people`, `search_by_name`, `search_by_photo`, `compile_highlight_reel`, and `check_compile_status` return structured, Pydantic-validated JSON
+- Job status tools return an absolute `download_url` when the job is done
+- MCP logs go to stderr; stdout carries only MCP protocol frames
+- README documents setup, FastAPI startup dependency, Claude Desktop config, and tool usage examples
+- MCP setup remains localhost-oriented and clearly warns against exposing the app on a network without adding authentication

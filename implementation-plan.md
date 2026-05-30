@@ -756,7 +756,153 @@ app/
 
 ---
 
-## Phase 6 — Full Body Re-ID (Future)
+## Phase 6 — LLM Tool Layer & MCP Server
+
+**Objective:** Expose the offline multimedia face-search app to AI agents through a clean HTTP API boundary and a thin MCP server. FastAPI remains the business-logic runtime and system of record; MCP becomes an independently runnable local client that calls stable `/api/*` endpoints and returns machine-friendly JSON.
+
+### Architecture
+
+```text
+MCP client
+  -> MCP server / tool package
+  -> HTTP API
+  -> FastAPI services
+  -> SQLite + ChromaDB
+```
+
+MCP runs as a separate process and calls FastAPI over HTTP. This preserves the API boundary, keeps FastAPI as the single source of business behavior, avoids shared in-process singleton assumptions, and makes future auth or remote deployment simpler. The tradeoff: FastAPI must be running before any MCP tool can execute.
+
+### Service extraction (`app/services/`)
+
+Extract search logic from route functions into thin service modules. Route handlers become wrappers that call these services — no behavior change, no new API contract.
+
+- `app/services/search_service.py`: `search_person_by_name(...)` and `search_by_reference_image_bytes(...)`
+- `app/services/person_service.py`: list/get person helpers
+
+### New API endpoints
+
+Add the read-oriented endpoints the MCP layer needs. All other existing routes remain unchanged.
+
+```
+GET /api/health
+    → {"status": "ok", "sqlite": true, "chromadb": true}
+
+GET /api/stats
+    → {"videos": N, "photos": N, "faces": N, "persons": N, "labeled_persons": N}
+
+GET /api/persons/{person_id}
+    → {id, name, thumbnail_path, face_count, samples: [...]}
+      name: null for unnamed clusters; 404 only when person_id does not exist
+      samples parsed from JSON string in SQLite persons.samples column
+
+GET /api/video/{video_id}/info
+GET /api/photo/{photo_id}/info
+    → JSON metadata + local API access paths for that media item
+```
+
+Do not add MCP endpoints for label, merge, re-cluster, prune, or force-index in this phase.
+
+### MCP server package (`mcp_server/`)
+
+```
+mcp_server/
+├── server.py          # FastMCP app + tool registration
+├── config.py          # pydantic-settings config
+├── client.py          # httpx.AsyncClient wrapper around FastAPI
+├── logging_config.py  # structured stderr logging
+├── models/            # Pydantic input/output models per tool
+└── tools/             # one module per tool group
+```
+
+Use `mcp.server.fastmcp.FastMCP`. Default transport is stdio for local agent clients. Optional Streamable HTTP transport for network-accessible deployments — verify transport name against the installed MCP SDK before documenting.
+
+Log structured events to stderr. MCP stdio stdout must carry only protocol frames.
+
+### MCP tools
+
+| Tool | Description |
+|---|---|
+| `health_check()` | Verify FastAPI is reachable and storage is initialized |
+| `get_library_stats()` | Return indexed video/photo/face/person counts |
+| `list_people(include_unnamed, limit, name_query)` | List person clusters; `include_unnamed` controls `name IS NULL` rows |
+| `get_person(person_id)` | Fetch person record with thumbnail and sample paths |
+| `search_by_name(name, limit)` | Name search; returns `{videos, photos}` |
+| `search_by_photo(image_path, limit, distance_threshold)` | Read file from disk, POST to `/api/search/photo`, then apply tool-side limit and distance filtering unless the API is extended to accept those parameters |
+| `get_media_info(video_id, photo_id)` | Metadata + API access paths for exactly one video or photo; reject calls that pass neither or both IDs |
+| `compile_highlight_reel(person_id, clip_duration_sec, merge_gap_sec, max_clips_per_video, order)` | Start compile job; return job_id |
+| `check_compile_status(job_id)` | Poll job; include absolute `download_url` when done |
+| `create_photo_collage(person_id, columns, sort, captions)` | Start collage job; return job_id |
+| `check_collage_status(job_id)` | Poll job; include absolute `download_url` when done |
+
+Tool outputs are Pydantic-validated and JSON-serializable. Search result fields follow existing API keys — do not claim `face_id`, `recorded_at`, or bounding box fields that the current API does not return.
+
+`search_by_photo` requires the MCP server process to share filesystem access with the image file. In the default local deployment this is always satisfied.
+
+### Configuration
+
+Environment variables via `pydantic-settings`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MULTIMEDIA_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI base URL |
+| `MULTIMEDIA_HTTP_TIMEOUT_SEC` | `30` | httpx request timeout |
+| `MULTIMEDIA_SEARCH_LIMIT_MAX` | `200` | Hard cap on tool result counts |
+| `MULTIMEDIA_LOG_LEVEL` | `INFO` | MCP server log verbosity |
+
+`MULTIMEDIA_API_KEY` may be reserved for future auth but is not implemented here.
+
+### Dependencies
+
+Add to `requirements.txt`:
+```
+mcp[cli]
+httpx
+pydantic-settings
+```
+
+### CLI and docs
+
+- `python cli.py mcp` — runs MCP server over stdio (primary entry point)
+- `python -m mcp_server.server` — direct alternative
+- Update `README.md`: setup steps, FastAPI startup requirement, Claude Desktop JSON config, tool usage examples, privacy/offline notes
+- Add `examples/tool_calls.py` with runnable calls against a live FastAPI instance
+
+### Project structure additions
+
+```
+mcp_server/
+├── server.py
+├── config.py
+├── client.py
+├── logging_config.py
+├── models/
+└── tools/
+app/services/
+├── search_service.py
+└── person_service.py
+examples/
+└── tool_calls.py
+```
+
+### Test plan
+
+- **Service tests:** extracted services preserve existing route response shapes; test empty name, no matches, empty Chroma collection, invalid image, no-face image
+- **API regression tests:** existing routes (`GET /api/search`, `POST /api/search/photo`, `GET /api/persons`) still pass; new endpoints return typed JSON and correct status codes
+- **MCP/tool tests:** validate input bounds; mock HTTP responses for success, 404, 422, 500, and connection failure; verify all tool outputs are Pydantic-validated; verify tool names/descriptions are discoverable; verify logs go to stderr
+- **Manual smoke tests:** `python cli.py serve` + `python -m mcp_server.server`; call `health_check`, `list_people`, `search_by_name`, and job status tools through MCP Inspector or `examples/tool_calls.py`; `python -m compileall app mcp_server cli.py`
+
+### Known constraints
+
+- FastAPI must be running for any MCP tool to execute — document this prominently.
+- MCP is localhost/offline by default. Network-accessible deployments require an API auth layer added to FastAPI before exposing either process on a network.
+- Redis, Chroma HTTP mode, load balancers, and multi-worker scaling are out of scope for this local single-user tool.
+- Destructive or identity-changing tools (label, merge, index, cluster, prune) are intentionally excluded from the initial MCP surface.
+
+**Verification:** Start `python cli.py serve`. Run `python cli.py mcp`. Open MCP Inspector — confirm all tools are listed. Call `health_check` — confirm `status: ok`. Call `search_by_name` with a labeled person — confirm structured JSON results. Start a compile job, poll `check_compile_status` — confirm `download_url` appears when done.
+
+---
+
+## Phase 7 — Full Body Re-ID (Future)
 
 Not built in Phases 1–4. Design notes for when this is scoped:
 
@@ -767,7 +913,7 @@ Not built in Phases 1–4. Design notes for when this is scoped:
 - **Search fusion:** `score = 0.6 * face_similarity + 0.4 * body_similarity`; body-only if no face detected in frame
 - **UI:** "Full body matching" toggle on `/search`; enrolls body embeddings from existing labeled faces automatically
 
-Phases 1–5 are unaffected — this is purely additive.
+Phases 1–6 are unaffected — this is purely additive.
 
 ---
 
@@ -781,6 +927,7 @@ python cli.py trim-thumbnails             [--dry-run]
 python cli.py backfill-dates
 python cli.py stats
 python cli.py serve                       [--host 0.0.0.0] [--port 8000]
+python cli.py mcp                         # run MCP server over stdio (Phase 6)
 ```
 
 `--videos-only` and `--photos-only` are mutually exclusive; omitting both processes all media types.
@@ -828,6 +975,9 @@ numpy
 scikit-learn
 tqdm
 Pillow                   # Phase 5: EXIF date extraction + photo collage composition
+mcp[cli]                 # Phase 6: MCP server runtime
+httpx                    # Phase 6: async HTTP client for MCP → FastAPI calls
+pydantic-settings        # Phase 6: environment-variable configuration for MCP server
 ```
 
 No React, no Node, no Docker required.
