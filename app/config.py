@@ -2,11 +2,12 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent
 
-DATA_DIR       = BASE_DIR / "data"
-THUMBNAILS_DIR = BASE_DIR / "static" / "thumbnails"
-OUTPUT_DIR     = BASE_DIR / "output"
-DB_PATH        = DATA_DIR / "library.db"
-CHROMA_PATH    = DATA_DIR / "chroma"
+DATA_DIR          = BASE_DIR / "data"
+THUMBNAILS_DIR    = BASE_DIR / "static" / "thumbnails"
+OUTPUT_DIR        = BASE_DIR / "output"
+LABELED_FACES_DIR = BASE_DIR / "labeled-faces"
+DB_PATH           = DATA_DIR / "library.db"
+CHROMA_PATH       = DATA_DIR / "chroma"
 
 KEYFRAME_INTERVAL_SEC = 1.0
 THUMBNAIL_SIZE        = (128, 128)

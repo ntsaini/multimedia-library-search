@@ -3,6 +3,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.clusterer import run_clusterer, run_incremental_clusterer
+from app.config import LABELED_FACES_DIR
+from app.labeled_faces import auto_label_persons, count_candidate_refs
 
 router = APIRouter()
 
@@ -19,18 +21,39 @@ class ClusterRequest(BaseModel):
     eps_video: float = 0.7
     eps_photo: float = 1.0
     min_samples: int = 3
+    auto_label: bool = True
+    label_threshold: float = 0.6
+    label_margin: float = 0.08
 
 
-def _run(incremental: bool, eps_video: float, eps_photo: float, min_samples: int) -> None:
+class AutoLabelRequest(BaseModel):
+    threshold: float = 0.6
+    margin: float = 0.08
+    overwrite: bool = False
+
+
+def _run(
+    incremental: bool,
+    eps_video: float,
+    eps_photo: float,
+    min_samples: int,
+    auto_label: bool,
+    label_threshold: float,
+    label_margin: float,
+) -> None:
     try:
+        kwargs = dict(
+            eps_video=eps_video,
+            eps_photo=eps_photo,
+            min_samples=min_samples,
+            auto_label=auto_label,
+            label_threshold=label_threshold,
+            label_margin=label_margin,
+        )
         if incremental:
-            result = run_incremental_clusterer(
-                eps_video=eps_video, eps_photo=eps_photo, min_samples=min_samples
-            )
+            result = run_incremental_clusterer(**kwargs)
         else:
-            result = run_clusterer(
-                eps_video=eps_video, eps_photo=eps_photo, min_samples=min_samples
-            )
+            result = run_clusterer(**kwargs)
         cluster_progress["result"] = result
         cluster_progress["status"] = "done"
     except Exception as exc:
@@ -55,6 +78,9 @@ def start_cluster(req: ClusterRequest):
             "eps_video": req.eps_video,
             "eps_photo": req.eps_photo,
             "min_samples": req.min_samples,
+            "auto_label": req.auto_label,
+            "label_threshold": req.label_threshold,
+            "label_margin": req.label_margin,
         },
         daemon=True,
     ).start()
@@ -64,3 +90,23 @@ def start_cluster(req: ClusterRequest):
 @router.get("/api/cluster/status")
 def get_cluster_status():
     return cluster_progress
+
+
+@router.get("/api/cluster/label-refs")
+def get_label_refs():
+    exists = LABELED_FACES_DIR.exists() and LABELED_FACES_DIR.is_dir()
+    return {
+        "exists": exists,
+        "candidate_people": count_candidate_refs(LABELED_FACES_DIR) if exists else 0,
+        "directory": LABELED_FACES_DIR.name,
+    }
+
+
+@router.post("/api/cluster/auto-label")
+def post_auto_label(req: AutoLabelRequest):
+    return auto_label_persons(
+        label_dir=LABELED_FACES_DIR,
+        threshold=req.threshold,
+        margin=req.margin,
+        overwrite=req.overwrite,
+    )

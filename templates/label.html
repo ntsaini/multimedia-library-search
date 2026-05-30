@@ -174,6 +174,13 @@
 
   </div>
   <div id="cluster-status" style="margin-top:0.75rem;min-height:1.2em"></div>
+
+  <div id="ref-labels-section" style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid #e9ecef">
+    <h3 style="margin-bottom:0.25rem">Reference Faces</h3>
+    <p class="muted" id="ref-labels-status" style="margin:0 0 0.6rem">Loading…</p>
+    <button onclick="applyRefLabels()" id="ref-labels-btn">Apply Reference Labels</button>
+    <div id="ref-labels-result" style="margin-top:0.6rem;min-height:1.2em"></div>
+  </div>
 </div>
 
 {% if persons %}
@@ -383,6 +390,62 @@ async function promoteFace(faceId, idx) {
     const d = await (await fetch('/api/cluster/status')).json();
     if (d.status === 'running') { showCS('Clustering in progress…', false); schedulePollCS(); }
   }());
+
+  /* ── Reference-face auto-labeling ── */
+  async function loadRefStatus() {
+    const el = document.getElementById('ref-labels-status');
+    const btn = document.getElementById('ref-labels-btn');
+    try {
+      const d = await (await fetch('/api/cluster/label-refs')).json();
+      if (!d.exists) {
+        el.innerHTML = `Create a <code>${d.directory}/</code> directory at the project root with one image per person (filename = name) to enable auto-labeling.`;
+        btn.disabled = true;
+      } else if (d.candidate_people === 0) {
+        el.innerHTML = `<code>${d.directory}/</code> exists but contains no images.`;
+        btn.disabled = true;
+      } else {
+        const n = d.candidate_people;
+        el.innerHTML = `${n} candidate ${n === 1 ? 'person' : 'people'} in <code>${d.directory}/</code>.`;
+        btn.disabled = false;
+      }
+    } catch (e) {
+      el.textContent = 'Could not load reference status.';
+      btn.disabled = true;
+    }
+  }
+
+  window.applyRefLabels = async function () {
+    const btn = document.getElementById('ref-labels-btn');
+    const out = document.getElementById('ref-labels-result');
+    btn.disabled = true;
+    out.innerHTML = '<span class="muted">Applying…</span>';
+    try {
+      const resp = await fetch('/api/cluster/auto-label', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const d = await resp.json();
+      const parts = [
+        `<strong>${d.labeled}</strong> labeled`,
+        `${d.ambiguous} ambiguous`,
+        `${d.no_match} no match`,
+        `${d.skipped_existing} skipped existing`,
+      ];
+      let html = `<span class="save-ok">${parts.join(' · ')}</span>`;
+      if (d.invalid_refs) {
+        html += ` <span class="muted">(${d.invalid_refs} invalid refs: ${d.zero_face_refs} zero-face, ${d.multi_face_refs} multi-face, ${d.unreadable_refs} unreadable, ${d.duplicate_refs} duplicate)</span>`;
+      }
+      out.innerHTML = html;
+      if (d.labeled > 0) setTimeout(() => location.reload(), 1500);
+    } catch (e) {
+      out.innerHTML = '<span style="color:#dc3545">Error applying labels.</span>';
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  loadRefStatus();
 
   /* ── Merge ── */
   const bar = document.getElementById('merge-bar');

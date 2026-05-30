@@ -8,10 +8,28 @@ from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
 from app.chroma import get_collection
-from app.config import BASE_DIR
+from app.config import BASE_DIR, LABELED_FACES_DIR
 from app.database import get_connection
 
 _STATIC_DIR = BASE_DIR / "static"
+
+
+def _maybe_auto_label(
+    auto_label: bool,
+    threshold: float,
+    margin: float,
+) -> dict | None:
+    if not auto_label or not LABELED_FACES_DIR.exists():
+        return None
+    from app.labeled_faces import auto_label_persons
+    label_result = auto_label_persons(
+        label_dir=LABELED_FACES_DIR,
+        threshold=threshold,
+        margin=margin,
+        overwrite=False,
+    )
+    print(f"Auto-label: {label_result}")
+    return label_result
 
 
 def _normed(arr: np.ndarray) -> np.ndarray:
@@ -164,7 +182,14 @@ def _assign_to_persons(person_ids, C, person_counts, ids, X, metas, eps):
     return new_centroids, new_counts, assigned_mask
 
 
-def run_clusterer(eps_video: float = 0.7, eps_photo: float = 1.0, min_samples: int = 3) -> dict:
+def run_clusterer(
+    eps_video: float = 0.7,
+    eps_photo: float = 1.0,
+    min_samples: int = 3,
+    auto_label: bool = True,
+    label_threshold: float = 0.6,
+    label_margin: float = 0.08,
+) -> dict:
     collection = get_collection()
     print("Fetching embeddings from ChromaDB...")
     result = collection.get(include=["embeddings", "metadatas"])
@@ -226,13 +251,20 @@ def run_clusterer(eps_video: float = 0.7, eps_photo: float = 1.0, min_samples: i
     _bulk_update_chroma(collection, ids, updated_metas)
     trimmed = trim_thumbnails()
     print(f"\nDone. {len(all_records)} persons | {total_noise} noise | {trimmed:,} thumbnails trimmed.")
-    return {"clusters": len(all_records), "noise": total_noise}
+    result = {"clusters": len(all_records), "noise": total_noise}
+    label_result = _maybe_auto_label(auto_label, label_threshold, label_margin)
+    if label_result is not None:
+        result["auto_label"] = label_result
+    return result
 
 
 def run_incremental_clusterer(
     eps_video: float = 0.7,
     eps_photo: float = 1.0,
     min_samples: int = 3,
+    auto_label: bool = True,
+    label_threshold: float = 0.6,
+    label_margin: float = 0.08,
 ) -> dict:
     conn = get_connection()
     rows = conn.execute(
@@ -242,7 +274,14 @@ def run_incremental_clusterer(
 
     if not rows:
         print("No existing clusters — falling back to full cluster.")
-        return run_clusterer(eps_video=eps_video, eps_photo=eps_photo, min_samples=min_samples)
+        return run_clusterer(
+            eps_video=eps_video,
+            eps_photo=eps_photo,
+            min_samples=min_samples,
+            auto_label=auto_label,
+            label_threshold=label_threshold,
+            label_margin=label_margin,
+        )
 
     person_ids = [r["id"] for r in rows]
     person_counts = {r["id"]: r["face_count"] for r in rows}
@@ -256,7 +295,11 @@ def run_incremental_clusterer(
     )
     if not result["ids"]:
         print("No new faces to process.")
-        return {"assigned": 0, "new_clusters": 0, "noise": 0}
+        out = {"assigned": 0, "new_clusters": 0, "noise": 0}
+        label_result = _maybe_auto_label(auto_label, label_threshold, label_margin)
+        if label_result is not None:
+            out["auto_label"] = label_result
+        return out
 
     ids = result["ids"]
     metadatas = list(result["metadatas"])
@@ -320,4 +363,8 @@ def run_incremental_clusterer(
         f"\nDone. {total_assigned} assigned | {total_new_clusters} new persons"
         f" | {total_noise} noise | {trimmed:,} thumbnails trimmed."
     )
-    return {"assigned": total_assigned, "new_clusters": total_new_clusters, "noise": total_noise}
+    out = {"assigned": total_assigned, "new_clusters": total_new_clusters, "noise": total_noise}
+    label_result = _maybe_auto_label(auto_label, label_threshold, label_margin)
+    if label_result is not None:
+        out["auto_label"] = label_result
+    return out

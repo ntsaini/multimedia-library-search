@@ -108,6 +108,16 @@ A local, private video library search engine that indexes a directory of videos,
 
 **US-27** As a developer, I want to connect Claude Desktop (or any MCP-compatible client) to the local multimedia library by adding a single JSON config block.
 
+### Phase 6.5 — Reference-Face Auto-Labeling
+
+**US-28** As a user, I want to place trusted face photos in a local `labeled-faces/` directory so the app can automatically restore names after clustering.
+
+**US-29** As a user, I want full and incremental cluster runs to apply confident reference-face labels without overwriting labels I already assigned manually.
+
+**US-30** As a user, I want to manually trigger the reference-label pass from the CLI or Label page without re-running clustering.
+
+**US-31** As a user, I want ambiguous or invalid reference images skipped rather than risk incorrect automatic labels.
+
 ### Phase 7 — Full Body Search (Future)
 
 **US-13** As a user, I want the search to find a person even when their face is partially obscured (cap, glasses, turned away), using their overall body appearance.
@@ -199,6 +209,24 @@ A local, private video library search engine that indexes a directory of videos,
 | F-60 | Add `examples/api_calls.py` with runnable HTTP API smoke examples against a live FastAPI instance; MCP transport examples should use MCP Inspector or another MCP-compatible client |
 | F-61 | Keep MCP localhost/offline by default; any network-accessible MCP or FastAPI deployment requires a separate auth layer before exposure |
 
+### Phase 6.5 — Reference-Face Auto-Labeling
+
+| ID | Requirement |
+|---|---|
+| F-62 | Add `LABELED_FACES_DIR = BASE_DIR / "labeled-faces"` and document the flat directory convention: one image per person, filename stem equals person name |
+| F-63 | Add `labeled-faces/` to `.gitignore`; reference images are private biometric user data |
+| F-64 | Add `app/labeled_faces.py` with a reference loader that scans supported image files, decodes each image locally, runs InsightFace, and returns one normalized embedding per valid filename stem |
+| F-65 | Reference images with zero detected faces, multiple detected faces, unreadable files, or duplicate filename stems are skipped and counted in the label-pass summary |
+| F-66 | Add an auto-label pass that compares SQLite `persons.centroid` values against reference embeddings using Euclidean distance on normalized vectors |
+| F-67 | A cluster is labeled only when `best_distance < threshold` and `second_best_distance - best_distance >= margin`; defaults are threshold `0.6` and margin `0.08` |
+| F-68 | Auto-labeling does not overwrite existing non-null `persons.name` values unless explicitly requested with an overwrite option |
+| F-69 | Full and incremental cluster runs invoke auto-labeling after clustering when `labeled-faces/` exists and auto-labeling is not disabled |
+| F-70 | Cluster API results return auto-label details under a nested `auto_label` key rather than mixing label counts with clustering counts |
+| F-71 | Add CLI flags for cluster: `--no-auto-label`, `--label-threshold`, and `--label-margin` |
+| F-72 | Add `python cli.py relabel` to run only the reference-label pass; support `--label-threshold`, `--label-margin`, and `--overwrite` |
+| F-73 | Add `POST /api/cluster/auto-label` for manual reference-label application and `GET /api/cluster/label-refs` for lightweight reference-directory status |
+| F-74 | Add a minimal `/label` page control showing reference-directory status and an "Apply Reference Labels" button with inline result text |
+
 ### Phase 7 — Full Body Re-ID (Future)
 
 | ID | Requirement |
@@ -267,3 +295,11 @@ The system uses keyframe sampling (default: 1 frame/sec) rather than processing 
 - MCP logs go to stderr; stdout carries only MCP protocol frames
 - README documents setup, FastAPI startup dependency, Claude Desktop config, and tool usage examples
 - MCP setup remains localhost-oriented and clearly warns against exposing the app on a network without adding authentication
+
+### Phase 6.5 Done When:
+- `labeled-faces/Alice Smith.jpg` is detected as one reference person named `Alice Smith`
+- Reference images with zero faces, multiple faces, unreadable files, or duplicate names are skipped and reported
+- `python cli.py cluster` applies reference labels after clustering when `labeled-faces/` exists, without overwriting existing names
+- `python cli.py relabel` applies reference labels without re-running clustering
+- `/label` shows reference-directory status and can trigger `POST /api/cluster/auto-label`
+- Ambiguous cluster/reference matches remain unlabeled rather than receiving a low-confidence name

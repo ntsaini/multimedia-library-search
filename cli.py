@@ -98,10 +98,49 @@ def cmd_cluster(args) -> None:
 
     init_db()
     get_collection()
+    kwargs = dict(
+        eps_video=args.eps,
+        eps_photo=args.eps,
+        min_samples=args.min_samples,
+        auto_label=not args.no_auto_label,
+        label_threshold=args.label_threshold,
+        label_margin=args.label_margin,
+    )
     if args.incremental:
-        run_incremental_clusterer(eps=args.eps, min_samples=args.min_samples)
+        run_incremental_clusterer(**kwargs)
     else:
-        run_clusterer(eps=args.eps, min_samples=args.min_samples)
+        run_clusterer(**kwargs)
+
+
+def cmd_relabel(args) -> None:
+    from app.database import init_db
+    from app.config import LABELED_FACES_DIR
+    from app.labeled_faces import auto_label_persons
+
+    init_db()
+    if not LABELED_FACES_DIR.exists():
+        print(f"No reference directory at {LABELED_FACES_DIR} — nothing to do.")
+        return
+    result = auto_label_persons(
+        label_dir=LABELED_FACES_DIR,
+        threshold=args.label_threshold,
+        margin=args.label_margin,
+        overwrite=args.overwrite,
+    )
+    print(
+        f"Labeled: {result['labeled']} | "
+        f"skipped existing: {result['skipped_existing']} | "
+        f"ambiguous: {result['ambiguous']} | "
+        f"no match: {result['no_match']}"
+    )
+    if result.get("invalid_refs"):
+        print(
+            f"Invalid references: {result['invalid_refs']} "
+            f"(zero-face: {result['zero_face_refs']}, "
+            f"multi-face: {result['multi_face_refs']}, "
+            f"unreadable: {result['unreadable_refs']}, "
+            f"duplicate: {result['duplicate_refs']})"
+        )
 
 
 def cmd_stats(args) -> None:
@@ -289,7 +328,37 @@ def main() -> None:
         "--min-samples", type=int, default=3,
         help="DBSCAN min_samples — minimum faces to form a cluster (default: 3)",
     )
+    p_cluster.add_argument(
+        "--no-auto-label", action="store_true",
+        help="Skip the reference-face auto-label pass after clustering",
+    )
+    p_cluster.add_argument(
+        "--label-threshold", type=float, default=0.6,
+        help="Max euclidean distance between cluster centroid and reference embedding (default: 0.6)",
+    )
+    p_cluster.add_argument(
+        "--label-margin", type=float, default=0.08,
+        help="Required gap between best and second-best reference match (default: 0.08)",
+    )
     p_cluster.set_defaults(func=cmd_cluster)
+
+    p_relabel = subs.add_parser(
+        "relabel",
+        help="Apply reference-face labels to existing clusters without re-clustering",
+    )
+    p_relabel.add_argument(
+        "--label-threshold", type=float, default=0.6,
+        help="Max euclidean distance between cluster centroid and reference embedding (default: 0.6)",
+    )
+    p_relabel.add_argument(
+        "--label-margin", type=float, default=0.08,
+        help="Required gap between best and second-best reference match (default: 0.08)",
+    )
+    p_relabel.add_argument(
+        "--overwrite", action="store_true",
+        help="Replace existing names on already-labeled persons too",
+    )
+    p_relabel.set_defaults(func=cmd_relabel)
 
     p_stats = subs.add_parser("stats", help="Show library statistics")
     p_stats.set_defaults(func=cmd_stats)

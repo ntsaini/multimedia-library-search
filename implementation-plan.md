@@ -902,6 +902,289 @@ examples/
 
 ---
 
+## Phase 6.5 — Reference-Face Auto-Labeling
+
+**Objective:** Reduce manual relabeling after full reclusters by letting the user keep a small local directory of trusted reference face images. After clustering, the app compares new person centroids against those reference embeddings and applies confident names automatically. This phase is intentionally narrow: post-cluster labeling only, no same-name cluster merging, no reference-management UI, no embedding cache.
+
+### Directory convention
+
+Use a flat directory at the project root:
+
+```text
+labeled-faces/
+├── Alice Smith.jpg
+├── Bob Jones.png
+└── Carol White.jpeg
+```
+
+Rules:
+
+- Filename stem is the person name.
+- One image per person in Phase 6.5.
+- Supported extensions are the existing photo extensions: `.jpg`, `.jpeg`, `.png`, `.heic`, `.heif`, `.webp`.
+- Add `labeled-faces/` to `.gitignore`; these files are private biometric reference data and must not be committed.
+
+Add to `app/config.py`:
+
+```python
+LABELED_FACES_DIR = BASE_DIR / "labeled-faces"
+```
+
+### Shared face-analysis singleton
+
+Reference embeddings must be generated with the same InsightFace model used for indexed face embeddings. Avoid adding a new model initialization path inside the labeler.
+
+Preferred cleanup:
+
+```text
+app/face_analysis.py
+```
+
+```python
+def get_face_analysis(use_gpu: bool = False) -> FaceAnalysis:
+    ...
+```
+
+Then update existing callers:
+
+- `app/indexer.py`
+- `app/photo_indexer.py`
+- `app/services/search_service.py`
+- `app/labeled_faces.py`
+
+If keeping the Phase 6.5 patch smaller, `app/labeled_faces.py` may reuse the existing search-service singleton, but the long-term shape should be a shared `app/face_analysis.py` helper.
+
+### New module: `app/labeled_faces.py`
+
+Functions:
+
+```python
+def load_reference_embeddings(label_dir: Path = LABELED_FACES_DIR) -> tuple[dict[str, np.ndarray], dict]:
+    ...
+
+def auto_label_persons(
+    label_dir: Path = LABELED_FACES_DIR,
+    threshold: float = 0.6,
+    margin: float = 0.08,
+    overwrite: bool = False,
+) -> dict:
+    ...
+```
+
+`load_reference_embeddings(...)`:
+
+1. Return an empty reference map if `label_dir` does not exist.
+2. Scan the directory non-recursively for supported image files.
+3. Use filename stem as the person name.
+4. Skip duplicate names and count them as invalid references.
+5. Decode each image locally.
+6. Run InsightFace and require exactly one detected face.
+7. Skip images with zero faces.
+8. Skip images with multiple faces. Do not pick the highest-confidence face in Phase 6.5; reference images are trusted anchors and ambiguous anchors are too risky.
+9. Skip unreadable files.
+10. Store each valid embedding as a normalized `np.ndarray`.
+
+The summary should count at least:
+
+```python
+{
+    "candidate_refs": N,
+    "valid_refs": N,
+    "invalid_refs": N,
+    "duplicate_refs": N,
+    "zero_face_refs": N,
+    "multi_face_refs": N,
+    "unreadable_refs": N,
+}
+```
+
+`auto_label_persons(...)`:
+
+1. Calls `load_reference_embeddings(...)`.
+2. Fetches persons with centroids:
+
+   ```sql
+   SELECT id, name, centroid
+   FROM persons
+   WHERE centroid IS NOT NULL
+   ```
+
+3. If `overwrite=False`, skip rows where `name IS NOT NULL`.
+4. Normalize each stored centroid after JSON decoding.
+5. Compute Euclidean distance from each person centroid to every reference embedding.
+6. Label only if:
+
+   ```text
+   best_distance < threshold
+   and
+   second_best_distance - best_distance >= margin
+   ```
+
+7. If only one valid reference exists, the margin check is considered satisfied.
+8. Update `persons.name` with parameterized SQL only.
+9. Return a compact summary:
+
+   ```python
+   {
+       "labeled": N,
+       "skipped_existing": N,
+       "ambiguous": N,
+       "no_match": N,
+       "candidate_refs": N,
+       "valid_refs": N,
+       "invalid_refs": N,
+       "duplicate_refs": N,
+       "zero_face_refs": N,
+       "multi_face_refs": N,
+       "unreadable_refs": N,
+   }
+   ```
+
+### Clusterer integration
+
+Add parameters to both cluster entry points:
+
+```python
+def run_clusterer(
+    eps_video: float = 0.7,
+    eps_photo: float = 1.0,
+    min_samples: int = 3,
+    auto_label: bool = True,
+    label_threshold: float = 0.6,
+    label_margin: float = 0.08,
+) -> dict:
+    ...
+
+def run_incremental_clusterer(
+    eps_video: float = 0.7,
+    eps_photo: float = 1.0,
+    min_samples: int = 3,
+    auto_label: bool = True,
+    label_threshold: float = 0.6,
+    label_margin: float = 0.08,
+) -> dict:
+    ...
+```
+
+At the end of each cluster run, after SQLite/Chroma updates are committed and thumbnails are trimmed:
+
+```python
+result = {"clusters": ..., "noise": ...}
+
+if auto_label and LABELED_FACES_DIR.exists():
+    from app.labeled_faces import auto_label_persons
+    result["auto_label"] = auto_label_persons(
+        label_dir=LABELED_FACES_DIR,
+        threshold=label_threshold,
+        margin=label_margin,
+        overwrite=False,
+    )
+```
+
+Keep auto-label results nested under `auto_label` rather than merging counts into the clustering result. This keeps API clients from confusing clustering counts with labeling counts.
+
+Do not auto-merge clusters that receive the same name in Phase 6.5. Same-name duplicates are acceptable and can still be merged manually on `/label`.
+
+### CLI changes
+
+Update `cluster`:
+
+```bash
+python cli.py cluster --incremental
+python cli.py cluster --no-auto-label
+python cli.py cluster --label-threshold 0.6
+python cli.py cluster --label-margin 0.08
+```
+
+Add `relabel`:
+
+```bash
+python cli.py relabel
+python cli.py relabel --label-threshold 0.55
+python cli.py relabel --label-margin 0.08
+python cli.py relabel --overwrite
+```
+
+`relabel` runs only the reference-label pass. It does not index, cluster, merge, prune, or change ChromaDB metadata.
+
+### API endpoints
+
+Add to `app/api/cluster.py` or a small dedicated label-reference router:
+
+```text
+GET /api/cluster/label-refs
+    -> {
+         "exists": true,
+         "candidate_people": 5,
+         "directory": "labeled-faces"
+       }
+
+POST /api/cluster/auto-label
+    body: {
+      "threshold": 0.6,
+      "margin": 0.08,
+      "overwrite": false
+    }
+    -> {
+         "labeled": 8,
+         "skipped_existing": 3,
+         "ambiguous": 2,
+         "no_match": 14,
+         "candidate_refs": 5,
+         "valid_refs": 5,
+         "invalid_refs": 0,
+         "duplicate_refs": 0,
+         "zero_face_refs": 0,
+         "multi_face_refs": 0,
+         "unreadable_refs": 0
+       }
+```
+
+`GET /api/cluster/label-refs` should be lightweight. It may count candidate image stems without running InsightFace, so the field should be named `candidate_people`, not `valid_people`.
+
+### Web UI — `/label`
+
+Add one small control below the existing cluster controls:
+
+```text
+Reference Faces
+5 candidate people in labeled-faces/
+[Apply Reference Labels]
+```
+
+Behavior:
+
+- Load status from `GET /api/cluster/label-refs`.
+- Button calls `POST /api/cluster/auto-label` with default threshold and margin.
+- Show result inline: labeled, ambiguous, no match, skipped existing, invalid references.
+- No upload, edit, delete, preview, or directory browsing UI in Phase 6.5.
+
+### Deferred
+
+- Subdirectory support for multiple reference images per person.
+- Cached reference embeddings in SQLite.
+- Dry-run / preview mode.
+- Reference image management UI.
+- Automatic same-name cluster merge.
+- Threshold tuning UI.
+
+### Test plan
+
+- `load_reference_embeddings()` returns one reference for `labeled-faces/Alice Smith.jpg` and uses `Alice Smith` as the name.
+- Zero-face image is skipped and increments `zero_face_refs`.
+- Multi-face image is skipped and increments `multi_face_refs`.
+- Duplicate stems are skipped deterministically and counted.
+- `auto_label_persons(overwrite=False)` updates only `name IS NULL` persons.
+- `auto_label_persons(overwrite=True)` may replace existing names.
+- Ambiguous match where margin is too small remains unlabeled.
+- `cluster` response nests label data under `auto_label`.
+- `python cli.py relabel` applies labels without changing person IDs, face assignments, or ChromaDB metadata.
+- `/label` button applies labels and displays the returned summary.
+
+**Verification:** Create `labeled-faces/Alice Smith.jpg` with exactly one face. Run `python cli.py cluster`; confirm a matching unlabeled cluster receives `Alice Smith`. Add a reference image containing two people; run `python cli.py relabel`; confirm it is skipped and reported as `multi_face_refs` without changing any labels.
+
+---
+
 ## Phase 7 — Full Body Re-ID (Future)
 
 Not built in Phases 1–4. Design notes for when this is scoped:
@@ -913,7 +1196,7 @@ Not built in Phases 1–4. Design notes for when this is scoped:
 - **Search fusion:** `score = 0.6 * face_similarity + 0.4 * body_similarity`; body-only if no face detected in frame
 - **UI:** "Full body matching" toggle on `/search`; enrolls body embeddings from existing labeled faces automatically
 
-Phases 1–6 are unaffected — this is purely additive.
+Phases 1–6.5 are unaffected — this is purely additive.
 
 ---
 
@@ -921,7 +1204,8 @@ Phases 1–6 are unaffected — this is purely additive.
 
 ```
 python cli.py index          <directory>  [--interval 1.0] [--gpu] [--no-cluster] [--eps 0.6] [--videos-only] [--photos-only]
-python cli.py cluster                     [--incremental] [--eps 0.6] [--min-samples 3]
+python cli.py cluster                     [--incremental] [--eps 0.6] [--min-samples 3] [--no-auto-label] [--label-threshold 0.6] [--label-margin 0.08]
+python cli.py relabel                     [--label-threshold 0.6] [--label-margin 0.08] [--overwrite]
 python cli.py prune                       [--dry-run]
 python cli.py trim-thumbnails             [--dry-run]
 python cli.py backfill-dates

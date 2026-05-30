@@ -224,3 +224,6 @@ __marimo__/
 data/
 static/thumbnails/
 output/
+
+# Reference face images for auto-labeling — private biometric data
+labeled-faces/
